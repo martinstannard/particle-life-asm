@@ -134,7 +134,7 @@ opts:
 
         .data
         .balign 8
-opt_seed:    .quad 1
+opt_seed:    .quad -1                # -1 = not given: 1, or the clock for the window
 opt_simd:    .quad 0
 opt_dump:    .quad 0
 opt_keys:    .quad 0
@@ -289,7 +289,19 @@ setup_sim:
         mov     eax, [rip + F_CORE]
         mov     [rbx + PL_CORE], eax
         mov     rax, [rip + opt_seed]
-        mov     [rbx + PL_RNG], rax
+        cmp     rax, -1
+        jne     0f
+        mov     eax, 1                  # bench, dump, headless: reproducible
+        cmp     dword ptr [rip + opt_bench], 0
+        jne     0f
+        cmp     qword ptr [rip + opt_dump], 0
+        jne     0f
+        cmp     dword ptr [rip + opt_headless], 0
+        jne     0f
+        call    now                     # window: a different preset order each run
+        vmulsd  xmm0, xmm0, [rip + D_1E9I]
+        vcvttsd2si rax, xmm0
+0:      mov     [rbx + PL_RNG], rax
         mov     eax, [rip + opt_cdiv]
         mov     [rbx + PL_CDIV], eax
         mov     edi, [rip + opt_n]
