@@ -33,6 +33,7 @@ s_steps:     .asciz "--steps"
 s_spf:       .asciz "--steps-per-frame"
 s_novsync:   .asciz "--no-vsync"
 s_cdiv:      .asciz "--cell-div"
+s_keys:      .asciz "--keys"
 s_avx2:      .asciz "avx2"
 s_avx512:    .asciz "avx512"
 s_name_avx2: .asciz "avx2"
@@ -47,6 +48,7 @@ s_usage:     .ascii "usage: particle_life [--particles N] [--types K(1-16)] [--s
              .ascii "         [--steps-per-frame S] [--no-vsync]\n"
              .ascii "         [--bench STEPS [--warmup STEPS]]   headless benchmark\n"
              .ascii "         [--dump-frame out.ppm [--steps STEPS]] headless, writes one frame\n"
+             .ascii "         [--keys STR]  feed key presses (e.g. \"r9+\") to the key handler first\n"
              .asciz "keys: Space pause, R new rules, N new positions, +/- particles, 1-9 types, Esc quit\n"
 s_noavx2:    .asciz "error: this program needs a CPU with AVX2 and FMA\n"
 s_no512:     .asciz "error: AVX-512F not available on this CPU\n"
@@ -84,6 +86,7 @@ opts:
         .quad s_spf,       opt_spf,     0
         .quad s_novsync,   opt_novsync, 3
         .quad s_cdiv,      opt_cdiv,    0
+        .quad s_keys,      opt_keys,    2
         .quad 0
 
         .data
@@ -91,6 +94,7 @@ opts:
 opt_seed:    .quad 1
 opt_simd:    .quad 0
 opt_dump:    .quad 0
+opt_keys:    .quad 0
 opt_n:       .long 20000
 opt_k:       .long 6
 opt_w:       .long 1600
@@ -663,7 +667,7 @@ main:
         call    die
 31:     mov     dword ptr [rip + pl + PL_SIMD], 2
 
-        # threads: default 1 for bench/dump, all cores for the window
+        # threads: default 1 for bench/dump, half the logical CPUs for the window
 4:      mov     edi, [rip + opt_threads]
         test    edi, edi
         jnz     5f
@@ -674,11 +678,26 @@ main:
         mov     edi, SC_NPROCESSORS_ONLN
         call    sysconf@PLT
         mov     edi, eax
+        shr     edi, 1                  # one per physical core on SMT machines
+        mov     eax, 1
+        cmp     edi, eax
+        cmovb   edi, eax
 5:      call    pl_threads_start
 
         call    setup_sim
 
-        cmp     dword ptr [rip + opt_bench], 0
+        # --keys: run the window's key handler on each character
+        mov     rbx, [rip + opt_keys]
+        test    rbx, rbx
+        jz      51f
+50:     movzx   edi, byte ptr [rbx]
+        test    edi, edi
+        jz      51f
+        call    on_key
+        inc     rbx
+        jmp     50b
+
+51:     cmp     dword ptr [rip + opt_bench], 0
         je      6f
         call    bench
         xor     eax, eax
