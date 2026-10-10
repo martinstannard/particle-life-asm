@@ -411,7 +411,24 @@ pl_random_particles:
 
 # ---------------------------------------------------------------- bin
 # void pl_bin(void): stable counting sort of the current set by the cell of
-# (nx, ny) into the second set, then swap the sets.
+# (nx, ny) into the second set, then swap the sets. Particles are already
+# nearly cell-ordered, so counts and cursors are kept in registers for runs
+# of equal cells instead of read-modify-writing memory per particle.
+
+.macro SCATTER src, dst
+        mov     r8, [r15 + \src]
+        mov     r9, [r15 + \dst]
+        xor     esi, esi
+1:      cmp     esi, edx
+        jae     2f
+        mov     eax, [r10 + rsi*4]
+        mov     ecx, [r8 + rsi*4]
+        mov     [r9 + rax*4], ecx
+        inc     esi
+        jmp     1b
+2:
+.endm
+
         .globl pl_bin
 pl_bin:
         push    rbx
@@ -427,82 +444,94 @@ pl_bin:
         xor     eax, eax
         rep stosd
 
-        # pass 1: cell id per particle, counts into cstart[c+1]
+        # pass 1a: cell ids, 8 at a time (arrays are padded)
         mov     r8, [r15 + PL_NX]
         mov     r9, [r15 + PL_NY]
         mov     r10, [r15 + PL_CELLID]
         mov     r11, [r15 + PL_CSTART]
-        mov     r12d, [r15 + PL_COLS]
-        mov     r13d, [r15 + PL_ROWS]
-        lea     ebx, [r12d - 1]         # cols-1
-        lea     r14d, [r13d - 1]        # rows-1
-        vmovss  xmm4, [r15 + PL_ICW]
-        vmovss  xmm5, [r15 + PL_ICH]
         mov     edx, [r15 + PL_N]
+        vbroadcastss ymm4, [r15 + PL_ICW]
+        vbroadcastss ymm5, [r15 + PL_ICH]
+        vpbroadcastd ymm8, [r15 + PL_COLS]
+        vpcmpeqd ymm9, ymm9, ymm9               # -1
+        vpaddd  ymm6, ymm8, ymm9                # cols-1
+        vpbroadcastd ymm7, [r15 + PL_ROWS]
+        vpaddd  ymm7, ymm7, ymm9                # rows-1
         xor     esi, esi
 1:      cmp     esi, edx
         jae     2f
-        vmulss  xmm0, xmm4, [r8 + rsi*4]
-        vcvttss2si eax, xmm0
-        cmp     eax, ebx
-        cmova   eax, ebx                # unsigned clamp to cols-1
-        vmulss  xmm1, xmm5, [r9 + rsi*4]
-        vcvttss2si ecx, xmm1
-        cmp     ecx, r14d
-        cmova   ecx, r14d
-        imul    ecx, r12d
-        add     eax, ecx
-        mov     [r10 + rsi*4], eax
-        inc     dword ptr [r11 + rax*4 + 4]
-        inc     esi
+        vmulps  ymm0, ymm4, [r8 + rsi*4]
+        vcvttps2dq ymm0, ymm0
+        vpminud ymm0, ymm0, ymm6                # unsigned clamp
+        vmulps  ymm1, ymm5, [r9 + rsi*4]
+        vcvttps2dq ymm1, ymm1
+        vpminud ymm1, ymm1, ymm7
+        vpmulld ymm1, ymm1, ymm8
+        vpaddd  ymm0, ymm0, ymm1
+        vmovdqu [r10 + rsi*4], ymm0
+        add     esi, 8
         jmp     1b
+2:      vzeroupper
+
+        # pass 1b: run-length counts into cstart[c+1]
+        test    edx, edx
+        jz      5f
+        mov     ebx, [r10]                      # current cell
+        xor     ecx, ecx                        # run length
+        xor     esi, esi
+3:      mov     eax, [r10 + rsi*4]
+        cmp     eax, ebx
+        je      4f
+        add     [r11 + rbx*4 + 4], ecx
+        mov     ebx, eax
+        xor     ecx, ecx
+4:      inc     ecx
+        inc     esi
+        cmp     esi, edx
+        jb      3b
+        add     [r11 + rbx*4 + 4], ecx
 
         # prefix sum -> starts, copy to cursors
-2:      mov     rdi, [r15 + PL_CCUR]
+5:      mov     rdi, [r15 + PL_CCUR]
         mov     ecx, [r15 + PL_NCELLS]
         xor     eax, eax
         xor     esi, esi
-3:      add     eax, [r11 + rsi*4]
+6:      add     eax, [r11 + rsi*4]
         mov     [r11 + rsi*4], eax
         mov     [rdi + rsi*4], eax
         inc     esi
         cmp     esi, ecx
-        jbe     3b
+        jbe     6b
 
-        # pass 2: scatter
-        mov     r12, [r15 + PL_VX]
-        mov     r13, [r15 + PL_VY]
-        mov     r14, [r15 + PL_T]
-        mov     rbx, [r15 + PL_ID]
+        # pass 2a: destination index per particle (overwrites cellid)
+        test    edx, edx
+        jz      9f
+        mov     ebx, [r10]                      # current cell
+        mov     ecx, [rdi + rbx*4]              # its cursor
         xor     esi, esi
-4:      cmp     esi, edx
-        jae     5f
-        mov     eax, [r10 + rsi*4]
-        mov     ecx, [rdi + rax*4]
-        inc     dword ptr [rdi + rax*4]
-        mov     eax, [r8 + rsi*4]
-        mov     r11, [r15 + PL_X2]
-        mov     [r11 + rcx*4], eax
-        mov     eax, [r9 + rsi*4]
-        mov     r11, [r15 + PL_Y2]
-        mov     [r11 + rcx*4], eax
-        mov     eax, [r12 + rsi*4]
-        mov     r11, [r15 + PL_VX2]
-        mov     [r11 + rcx*4], eax
-        mov     eax, [r13 + rsi*4]
-        mov     r11, [r15 + PL_VY2]
-        mov     [r11 + rcx*4], eax
-        mov     eax, [r14 + rsi*4]
-        mov     r11, [r15 + PL_T2]
-        mov     [r11 + rcx*4], eax
-        mov     eax, [rbx + rsi*4]
-        mov     r11, [r15 + PL_ID2]
-        mov     [r11 + rcx*4], eax
+7:      mov     eax, [r10 + rsi*4]
+        cmp     eax, ebx
+        je      8f
+        mov     [rdi + rbx*4], ecx
+        mov     ebx, eax
+        mov     ecx, [rdi + rbx*4]
+8:      mov     [r10 + rsi*4], ecx
+        inc     ecx
         inc     esi
-        jmp     4b
+        cmp     esi, edx
+        jb      7b
+        mov     [rdi + rbx*4], ecx
+
+        # pass 2b: one scatter per array
+9:      SCATTER PL_NX, PL_X2
+        SCATTER PL_NY, PL_Y2
+        SCATTER PL_VX, PL_VX2
+        SCATTER PL_VY, PL_VY2
+        SCATTER PL_T,  PL_T2
+        SCATTER PL_ID, PL_ID2
 
         # swap sets
-5:      vmovdqu ymm0, [r15 + PL_X]
+        vmovdqu ymm0, [r15 + PL_X]
         vmovdqu ymm1, [r15 + PL_X2]
         vmovdqu xmm2, [r15 + PL_X + 32]
         vmovdqu xmm3, [r15 + PL_X2 + 32]
