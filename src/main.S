@@ -32,6 +32,7 @@ s_dump:      .asciz "--dump-frame"
 s_steps:     .asciz "--steps"
 s_spf:       .asciz "--steps-per-frame"
 s_novsync:   .asciz "--no-vsync"
+s_cdiv:      .asciz "--cell-div"
 s_avx2:      .asciz "avx2"
 s_avx512:    .asciz "avx512"
 s_name_avx2: .asciz "avx2"
@@ -42,7 +43,8 @@ s_paused:    .asciz " | PAUSED"
 s_empty:     .asciz ""
 s_usage:     .ascii "usage: particle_life [--particles N] [--types K(1-16)] [--seed S]\n"
              .ascii "         [--width W] [--height H] (>= 256)\n"
-             .ascii "         [--threads T] [--simd avx2|avx512] [--steps-per-frame S] [--no-vsync]\n"
+             .ascii "         [--threads T] [--simd avx2|avx512] [--cell-div 1|2]\n"
+             .ascii "         [--steps-per-frame S] [--no-vsync]\n"
              .ascii "         [--bench STEPS [--warmup STEPS]]   headless benchmark\n"
              .ascii "         [--dump-frame out.ppm [--steps STEPS]] headless, writes one frame\n"
              .asciz "keys: Space pause, R new rules, N new positions, +/- particles, 1-9 types, Esc quit\n"
@@ -50,7 +52,7 @@ s_noavx2:    .asciz "error: this program needs a CPU with AVX2 and FMA\n"
 s_no512:     .asciz "error: AVX-512F not available on this CPU\n"
 s_nomem:     .asciz "error: out of memory\n"
 s_sdlerr:    .asciz "SDL error: %s\n"
-s_bench_hdr: .asciz "asm   simd=%s threads=%u particles=%u types=%u world=%ux%u steps=%u (after %u warmup)\n"
+s_bench_hdr: .asciz "asm   simd=%s threads=%u particles=%u types=%u world=%ux%u cell-div=%u steps=%u (after %u warmup)\n"
 s_bench_res: .asciz "      %.1f steps/s  %.3f ms/step  %.2f ns/particle-step\n"
 s_dumped:    .asciz "wrote %s (%ux%u, after %u steps, %u particles)\n"
 s_dumpfail:  .asciz "error: could not write %s\n"
@@ -81,6 +83,7 @@ opts:
         .quad s_steps,     opt_steps,   0
         .quad s_spf,       opt_spf,     0
         .quad s_novsync,   opt_novsync, 3
+        .quad s_cdiv,      opt_cdiv,    0
         .quad 0
 
         .data
@@ -98,6 +101,7 @@ opt_threads: .long 0
 opt_steps:   .long 600
 opt_spf:     .long 2
 opt_novsync: .long 0
+opt_cdiv:    .long 2
 
         .bss
         .balign 64
@@ -218,6 +222,8 @@ setup_sim:
         mov     [rbx + PL_CORE], eax
         mov     rax, [rip + opt_seed]
         mov     [rbx + PL_RNG], rax
+        mov     eax, [rip + opt_cdiv]
+        mov     [rbx + PL_CDIV], eax
         mov     edi, [rip + opt_n]
         call    pl_alloc
         test    eax, eax
@@ -285,15 +291,16 @@ bench:
         mov     ecx, [rip + pl + PL_N]
         mov     r8d, [rip + pl + PL_K]
         mov     r9d, [rip + opt_w]
-        sub     rsp, 8
         mov     eax, [rip + opt_warmup]
         push    rax
         mov     eax, [rip + opt_bench]
         push    rax
+        mov     eax, [rip + pl + PL_CDIV]
+        push    rax
         mov     eax, [rip + opt_h]
         push    rax
         xor     eax, eax
-        call    printf@PLT                  # args beyond r9: h, steps, warmup
+        call    printf@PLT                  # args beyond r9: h, cdiv, steps, warmup
         add     rsp, 32
         # results: steps/s, ms/step, ns/particle-step
         vcvtsi2sd xmm3, xmm3, dword ptr [rip + opt_bench]
@@ -618,6 +625,10 @@ main:
         cmp     dword ptr [rip + opt_w], 32768
         ja      usage
         cmp     dword ptr [rip + opt_h], 32768
+        ja      usage
+        mov     eax, [rip + opt_cdiv]
+        dec     eax
+        cmp     eax, MAXCDIV - 1
         ja      usage
 
         # SIMD selection: AVX2 required; AVX-512 by default when present

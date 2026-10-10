@@ -16,6 +16,13 @@
 #   F += dir * f * force_scale
 # Rewritten per pair with s = (maxr - d)/(maxr - minr) = b0 - d*ir, so that
 # s > 1 <=> d < minr and s <= 0 <=> d >= maxr; no explicit range mask needed.
+# The kernels accumulate g = f/d times (dx, dy) and use
+#   core branch:  g = (d*c1 - core)/d = c1 - core/d
+#   attraction:   g = attraction * sc^2 (3 - 2 sc) / d,   sc = clamp(s, 0, 1)
+# with 1/d from rsqrt + one Newton step. The Newton step's factor 1/2 is folded
+# into the tables (exact powers of two): the kernel works with i2 = 2/d and
+# d2 = 2d, so TIR = ir/2, TAS = -attraction*force_scale/2 (sign absorbs
+# 2sc - 3), CORES = core*force_scale/2.
 
         .intel_syntax noprefix
         .include "layout.inc"
@@ -42,6 +49,9 @@ F_MINR1:  .float 24.0
 F_MAXR0:  .float 33.0
 F_MAXR1:  .float 70.0
 F_ZEROS:  .float 0.0
+F_HALF:   .float 0.5
+F_MHALF:  .float -0.5
+F_TWO:    .float 2.0
 
         .bss
         .balign 64
@@ -183,7 +193,9 @@ pl_update_tables:
 
         vmovss  xmm0, [r15 + PL_CORE]
         vmulss  xmm0, xmm0, [r15 + PL_FSCALE]
-        vmovss  [r15 + PL_CORES], xmm0
+        vmovss  [rsp], xmm0                     # core_s
+        vmulss  xmm0, xmm0, [rip + F_HALF]
+        vmovss  [r15 + PL_CORES], xmm0          # core_s / 2
         vmovss  xmm1, [r15 + PL_FRIC]
         vmulss  xmm1, xmm1, [r15 + PL_DT]
         vmovss  xmm2, [rip + F_ONE]
@@ -206,26 +218,38 @@ pl_update_tables:
         vsubss  xmm3, xmm2, xmm1
         vmovss  xmm4, [rip + F_ONE]
         vdivss  xmm3, xmm4, xmm3        # ir
-        vmovss  [r15 + PL_TIR + rax*4], xmm3
         vmulss  xmm4, xmm2, xmm3        # b0 = maxr * ir
         vmovss  [r15 + PL_TB0 + rax*4], xmm4
-        vmovss  xmm4, [r15 + PL_CORES]
+        vmulss  xmm3, xmm3, [rip + F_HALF]
+        vmovss  [r15 + PL_TIR + rax*4], xmm3    # ir / 2
+        vmovss  xmm4, [rsp]
         vdivss  xmm4, xmm4, xmm1        # c1 = core_s / minr
         vmovss  [r15 + PL_TC1 + rax*4], xmm4
         vmovss  xmm4, [r15 + PL_ATTR + rax*4]
         vmulss  xmm4, xmm4, [r15 + PL_FSCALE]
-        vmovss  [r15 + PL_TAS + rax*4], xmm4
+        vmulss  xmm4, xmm4, [rip + F_MHALF]
+        vmovss  [r15 + PL_TAS + rax*4], xmm4    # -attraction * force_scale / 2
         inc     r12d
         jmp     2b
 3:      inc     ebx
         jmp     1b
 4:      vmovss  [r15 + PL_MAXR], xmm7
 
-        # grid: cols = max(3, floor(W / maxr)), cell = W / cols >= maxr
+        # grid: cell >= maxr / R, at least 2R+1 cells per axis
+        mov     eax, [r15 + PL_CDIV]
+        lea     ecx, [eax - 1]
+        cmp     ecx, MAXCDIV - 1
+        jbe     41f
+        mov     eax, 1
+        mov     [r15 + PL_CDIV], eax
+41:     lea     ecx, [eax*4 + 2]
+        mov     [r15 + PL_NRANGE], ecx
+        vcvtsi2ss xmm1, xmm1, eax
+        vdivss  xmm7, xmm7, xmm1                # min cell size
+        lea     ecx, [eax*2 + 1]                # min cells per axis
         vmovss  xmm0, [r15 + PL_W]
         vdivss  xmm1, xmm0, xmm7
         vcvttss2si eax, xmm1
-        mov     ecx, 3
         cmp     eax, ecx
         cmovl   eax, ecx
         mov     [r15 + PL_COLS], eax
@@ -274,76 +298,84 @@ pl_update_tables:
         call    calloc@PLT
         mov     [r15 + PL_NBR], rax
 
-        # neighbour ranges: per cell, per neighbour row (dy = -1,0,1) two
-        # entries {first cell, last cell + 1, shift x, shift y}; the second
-        # is empty unless the row wraps in x.
+        # neighbour ranges: per cell, per neighbour row ry = cy-R..cy+R, two
+        # entries {first cell, last cell + 1, shift x, shift y} covering
+        # columns cx-R..cx+R; the second is empty unless the row wraps in x.
 5:      mov     r14, [r15 + PL_NBR]
         mov     r10d, [r15 + PL_COLS]
         mov     r11d, [r15 + PL_ROWS]
+        mov     r12d, [r15 + PL_CDIV]
         xor     r8d, r8d                # cy
 6:      cmp     r8d, r11d
         jae     12f
         xor     r9d, r9d                # cx
 7:      cmp     r9d, r10d
         jae     11f
-        xor     ecx, ecx                # d = dy + 1
-8:      lea     eax, [r8d + ecx - 1]    # ry
-        xor     edx, edx                # sy bits
+        mov     rdx, r14
+        mov     ecx, r12d
+        neg     ecx                     # d = -R
+8:      lea     eax, [r8d + ecx]        # ry
+        xor     edi, edi                # sy bits
         test    eax, eax
         jns     81f
-        lea     eax, [r11d - 1]
-        mov     edx, [r15 + PL_H]
-        xor     edx, 0x80000000         # -H
+        add     eax, r11d
+        mov     edi, [r15 + PL_H]
+        xor     edi, 0x80000000         # -H
         jmp     82f
 81:     cmp     eax, r11d
         jb      82f
-        xor     eax, eax
-        mov     edx, [r15 + PL_H]       # +H
+        sub     eax, r11d
+        mov     edi, [r15 + PL_H]       # +H
 82:     imul    eax, r10d               # base = ry * cols
-        mov     [r14 + 12], edx
-        mov     [r14 + 28], edx
-        test    r9d, r9d
-        jnz     83f
-        # cx == 0: [base, base+2) shift 0; [base+cols-1, base+cols) shift -W
-        mov     [r14 + 0], eax
-        lea     esi, [eax + 2]
-        mov     [r14 + 4], esi
-        mov     dword ptr [r14 + 8], 0
-        lea     esi, [eax + r10d - 1]
-        mov     [r14 + 16], esi
-        lea     esi, [eax + r10d]
-        mov     [r14 + 20], esi
-        mov     esi, [r15 + PL_W]
-        xor     esi, 0x80000000
-        mov     [r14 + 24], esi
+        mov     [rdx + 12], edi
+        mov     [rdx + 28], edi
+        mov     esi, r9d
+        sub     esi, r12d               # lo = cx - R
+        lea     ebx, [r9d + r12d]       # hi = cx + R
+        test    esi, esi
+        jns     83f
+        # lo < 0: [base, base+hi+1) shift 0; [base+cols+lo, base+cols) shift -W
+        mov     [rdx + 0], eax
+        lea     edi, [eax + ebx + 1]
+        mov     [rdx + 4], edi
+        mov     dword ptr [rdx + 8], 0
+        lea     edi, [eax + r10d]
+        add     edi, esi
+        mov     [rdx + 16], edi
+        lea     edi, [eax + r10d]
+        mov     [rdx + 20], edi
+        mov     edi, [r15 + PL_W]
+        xor     edi, 0x80000000
+        mov     [rdx + 24], edi
         jmp     85f
-83:     lea     esi, [r10d - 1]
-        cmp     r9d, esi
-        jne     84f
-        # cx == cols-1: [base+cols-2, base+cols) shift 0; [base, base+1) shift +W
-        lea     esi, [eax + r10d - 2]
-        mov     [r14 + 0], esi
-        lea     esi, [eax + r10d]
-        mov     [r14 + 4], esi
-        mov     dword ptr [r14 + 8], 0
-        mov     [r14 + 16], eax
-        lea     esi, [eax + 1]
-        mov     [r14 + 20], esi
-        mov     esi, [r15 + PL_W]
-        mov     [r14 + 24], esi
+83:     cmp     ebx, r10d
+        jb      84f
+        # hi >= cols: [base+lo, base+cols) shift 0; [base, base+hi-cols+1) shift +W
+        lea     edi, [eax + esi]
+        mov     [rdx + 0], edi
+        lea     edi, [eax + r10d]
+        mov     [rdx + 4], edi
+        mov     dword ptr [rdx + 8], 0
+        mov     [rdx + 16], eax
+        lea     edi, [eax + ebx + 1]
+        sub     edi, r10d
+        mov     [rdx + 20], edi
+        mov     edi, [r15 + PL_W]
+        mov     [rdx + 24], edi
         jmp     85f
-84:     # interior: [base+cx-1, base+cx+2) shift 0, second entry empty
-        lea     esi, [eax + r9d - 1]
-        mov     [r14 + 0], esi
-        lea     esi, [eax + r9d + 2]
-        mov     [r14 + 4], esi
-        mov     dword ptr [r14 + 8], 0
-        mov     qword ptr [r14 + 16], 0
-        mov     qword ptr [r14 + 24], 0
-85:     add     r14, 32
+84:     # interior: [base+lo, base+hi+1) shift 0, second entry empty
+        lea     edi, [eax + esi]
+        mov     [rdx + 0], edi
+        lea     edi, [eax + ebx + 1]
+        mov     [rdx + 4], edi
+        mov     dword ptr [rdx + 8], 0
+        mov     qword ptr [rdx + 16], 0
+        mov     qword ptr [rdx + 24], 0
+85:     add     rdx, 32
         inc     ecx
-        cmp     ecx, 3
-        jb      8b
+        cmp     ecx, r12d
+        jle     8b
+        add     r14, NBR_STRIDE
         inc     r9d
         jmp     7b
 11:     inc     r8d
@@ -557,8 +589,8 @@ pl_bin:
 #           ymm14 core_s (K<=8) or type bit-3 mask (K<=16), ymm15 eps
 #   AVX512: zmm16..19 table rows (b0, ir, c1, as), zmm20.. constants, k1 lane
 #           mask, k2 repulsion mask
-# Frame: [rsp] c_end, [rsp+4] xi, [rsp+8] yi, [rsp+32] core_s x8,
-#        [rsp+64] 6 ranges {u32 j0, u32 j1, f32 sx, f32 sy}
+# Frame: [rsp] c_end, [rsp+4] xi, [rsp+8] yi, [rsp+12] 2*ranges,
+#        [rsp+32] core_s/2 x8, [rsp+64] up to 10 ranges {u32 j0, u32 j1, f32 sx, f32 sy}
 
 .set TOFF_B0, 0
 .set TOFF_IR, 1024
@@ -575,19 +607,17 @@ pl_bin:
 .endm
 
 .macro BODY2 wide, tail
-        vmovups ymm4, [rsi + r10*4]
-        vsubps  ymm4, ymm4, ymm0                # dx
-        vmovups ymm5, [rdi + r10*4]
-        vsubps  ymm5, ymm5, ymm1                # dy
-        vmulps  ymm6, ymm4, ymm4
-        vfmadd231ps ymm6, ymm5, ymm5            # d2
-        vmaxps  ymm6, ymm6, ymm15
-        vrsqrtps ymm7, ymm6                     # ~1/d, 12 bits
-        vmulps  ymm8, ymm6, ymm7
-        vfnmadd213ps ymm8, ymm7, [rip + V_THREE] # 3 - d2 r^2
-        vmulps  ymm7, ymm7, [rip + V_HALF]
-        vmulps  ymm7, ymm7, ymm8                # inv = 1/d (Newton step)
-        vmulps  ymm8, ymm6, ymm7                # d
+        vsubps  ymm4, ymm0, [rsi + r10*4]       # -dx (load folded)
+        vsubps  ymm5, ymm1, [rdi + r10*4]       # -dy
+        vmovaps ymm6, ymm5
+        vfmadd213ps ymm6, ymm5, ymm15           # dy^2 + eps
+        vfmadd231ps ymm6, ymm4, ymm4            # d^2 + eps
+        vrsqrtps ymm7, ymm6                     # r ~ 1/d, 12 bits
+        vmulps  ymm8, ymm6, ymm7                # h = d^2 r
+        vmovaps ymm6, ymm7
+        vfnmadd213ps ymm6, ymm8, [rip + V_THREE] # e = 3 - h r
+        vmulps  ymm7, ymm7, ymm6                # i2 = r e  = 2/d
+        vmulps  ymm8, ymm8, ymm6                # d2 = h e  = 2d
         vmovdqu ymm9, [r8 + r10*4]              # type(j)
 .if \wide
         vpslld  ymm14, ymm9, 28
@@ -595,31 +625,23 @@ pl_bin:
         LOOKUP2 \wide, ymm10, TOFF_B0
         LOOKUP2 \wide, ymm11, TOFF_IR
         vfnmadd231ps ymm10, ymm8, ymm11         # s = b0 - d*ir
-.if \wide
-        vmaxps  ymm11, ymm10, [rip + V_ZERO]
-.else
-        vmaxps  ymm11, ymm10, ymm13
-.endif
-        vminps  ymm11, ymm11, ymm12             # sc = clamp(s, 0, 1)
-        vmulps  ymm6, ymm11, ymm11
-        vaddps  ymm11, ymm11, ymm11
-        vsubps  ymm11, ymm11, [rip + V_THREE]   # 2sc - 3
-        vmulps  ymm6, ymm6, ymm11               # -smoothstep
         LOOKUP2 \wide, ymm11, TOFF_AS
+        vmulps  ymm11, ymm11, ymm7              # -a/d
+        LOOKUP2 \wide, ymm8, TOFF_C1
 .if \wide
-        vfnmadd213ps ymm6, ymm11, [rip + V_ZERO]
+        vfnmadd231ps ymm8, ymm7, [rsp + 32]     # core: c1 - core/d
+        vmaxps  ymm6, ymm10, [rip + V_ZERO]
 .else
-        vfnmadd213ps ymm6, ymm11, ymm13         # attraction branch
+        vfnmadd231ps ymm8, ymm7, ymm14          # core: c1 - core/d
+        vmaxps  ymm6, ymm10, ymm13              # sc (s > 1 lanes are discarded)
 .endif
-        LOOKUP2 \wide, ymm11, TOFF_C1
-.if \wide
-        vfmsub213ps ymm11, ymm8, [rsp + 32]
-.else
-        vfmsub213ps ymm11, ymm8, ymm14          # core branch: d*c1 - core_s
-.endif
+        vmulps  ymm7, ymm6, ymm6                # sc^2
+        vaddps  ymm6, ymm6, ymm6
+        vsubps  ymm6, ymm6, [rip + V_THREE]     # 2sc - 3
+        vmulps  ymm11, ymm11, ymm7
+        vmulps  ymm11, ymm11, ymm6              # attraction: a sc^2 (3-2sc) / d
         vcmpps  ymm10, ymm10, ymm12, 0x1e       # s > 1  <=>  d < minr
-        vblendvps ymm6, ymm6, ymm11, ymm10
-        vmulps  ymm6, ymm6, ymm7                # f / d
+        vblendvps ymm6, ymm11, ymm8, ymm10      # g = f / d
 .if \tail
         mov     eax, r11d
         sub     eax, r10d
@@ -628,43 +650,78 @@ pl_bin:
         vpcmpgtd ymm7, ymm7, [rip + V_IOTA]
         vandps  ymm6, ymm6, ymm7
 .endif
-        vfmadd231ps ymm2, ymm6, ymm4
-        vfmadd231ps ymm3, ymm6, ymm5
+        vfnmadd231ps ymm2, ymm6, ymm4           # F += g * dx
+        vfnmadd231ps ymm3, ymm6, ymm5
 .endm
 
-.macro BODY512
-        vmovups zmm4{k1}{z}, [rsi + r10*4]
-        vsubps  zmm4, zmm4, zmm0
-        vmovups zmm5{k1}{z}, [rdi + r10*4]
-        vsubps  zmm5, zmm5, zmm1
-        vmulps  zmm6, zmm4, zmm4
-        vfmadd231ps zmm6, zmm5, zmm5
-        vmaxps  zmm6, zmm6, zmm23
+# Software-pipelined AVX-512 stages for full 16-lane vectors. Stage 1 (loads,
+# distance, 1/d, table lookups) for vector j+1 is issued next to stage 2
+# (smoothstep, branch select, accumulate) of vector j, so that the long
+# dependency chain of one vector does not fill the out-of-order window.
+# A register set is {dx, dy, s, a/d, core branch}. Lanes outside the range
+# get dx = dy = 0 from the zero-masked loads and so contribute exactly 0.
+.macro S1_512 dx, dy, s, ad, cb
+        vsubps  \dx{k1}{z}, zmm0, [rsi + r10*4] # -dx (load folded), 0 in unused lanes
+        vsubps  \dy{k1}{z}, zmm1, [rdi + r10*4] # -dy
+        vmovaps zmm6, \dy
+        vfmadd213ps zmm6, \dy, zmm23            # dy^2 + eps
+        vfmadd231ps zmm6, \dx, \dx              # d^2 + eps
         vrsqrt14ps zmm7, zmm6
-        vmulps  zmm8, zmm6, zmm7
-        vfnmadd213ps zmm8, zmm7, zmm27
-        vmulps  zmm7, zmm7, zmm24
-        vmulps  zmm7, zmm7, zmm8
-        vmulps  zmm8, zmm6, zmm7
+        vmulps  \cb, zmm6, zmm7                 # h
+        vmovaps zmm6, zmm7
+        vfnmadd213ps zmm6, \cb, zmm27           # e
+        vmulps  zmm7, zmm7, zmm6                # i2
+        vmulps  \cb, \cb, zmm6                  # d2
         vmovdqu32 zmm9{k1}{z}, [r8 + r10*4]
-        vpermps zmm10, zmm9, zmm16
-        vpermps zmm11, zmm9, zmm17
-        vfnmadd231ps zmm10, zmm8, zmm11
-        vmaxps  zmm11, zmm10, zmm21
-        vminps  zmm11, zmm11, zmm20
-        vmulps  zmm6, zmm11, zmm11
-        vaddps  zmm11, zmm11, zmm11
-        vsubps  zmm11, zmm11, zmm27
-        vmulps  zmm6, zmm6, zmm11
-        vpermps zmm11, zmm9, zmm19
-        vfnmadd213ps zmm6, zmm11, zmm21
-        vpermps zmm12, zmm9, zmm18
-        vfmsub213ps zmm12, zmm8, zmm22
-        vcmpps  k2, zmm10, zmm20, 0x1e
-        vmovaps zmm6{k2}, zmm12
-        vmulps  zmm6, zmm6, zmm7
-        vfmadd231ps zmm2{k1}, zmm6, zmm4
-        vfmadd231ps zmm3{k1}, zmm6, zmm5
+        add     r10d, 16
+        vpermps \s, zmm9, zmm16
+        vpermps \ad, zmm9, zmm17
+        vfnmadd231ps \s, \cb, \ad               # s
+        vpermps \ad, zmm9, zmm19
+        vmulps  \ad, \ad, zmm7
+        vpermps \cb, zmm9, zmm18
+        vfnmadd231ps \cb, zmm7, zmm22           # core branch
+.endm
+
+# Advance the j stream of particle i: r10 = j, r11 = range end, ecx = range
+# index * 2. Moves to the next non-empty range when the current one is used up
+# (updating xi-sx / yi-sy in zmm0/zmm1), sets k1 to the valid lanes of
+# [j, j+16) and advances j by 16; jumps to \done when all ranges are used up.
+.macro NEXTVEC name, done
+        cmp     r10d, r11d
+        jb      2f
+1:      add     ecx, 2
+        cmp     ecx, [rsp + 12]
+        jae     \done
+        mov     r10d, [rsp + 64 + rcx*8]
+        mov     r11d, [rsp + 68 + rcx*8]
+        cmp     r10d, r11d
+        jae     1b
+        vmovss  xmm0, [rsp + 4]
+        vsubss  xmm0, xmm0, [rsp + 72 + rcx*8]
+        vbroadcastss zmm0, xmm0
+        vmovss  xmm1, [rsp + 8]
+        vsubss  xmm1, xmm1, [rsp + 76 + rcx*8]
+        vbroadcastss zmm1, xmm1
+2:      mov     eax, r11d
+        sub     eax, r10d
+        mov     edx, 16
+        cmp     eax, edx
+        cmova   eax, edx                        # bzhi only looks at 8 index bits
+        mov     edx, 0xffff
+        bzhi    edx, edx, eax                   # (1 << min(n,16)) - 1
+        kmovw   k1, edx
+.endm
+
+.macro S2_512 dx, dy, s, ad, cb
+        vmaxps  zmm28, \s, zmm21                # sc (s > 1 lanes are discarded)
+        vmulps  zmm29, zmm28, zmm28
+        vfmsub213ps zmm28, zmm26, zmm27         # 2sc - 3
+        vmulps  \ad, \ad, zmm29
+        vcmpps  k2, \s, zmm20, 0x12             # s <= 1: attraction lanes
+        vmulps  \cb{k2}, \ad, zmm28             # merge attraction into core branch
+        vfnmadd231ps zmm2, \cb, \dx             # F += g * dx
+        vfnmadd231ps zmm3, \cb, \dy
 .endm
 
 # x = xmm7 wrapped into [0, extent) for extent at [r15 + off]; clobbers xmm8
@@ -690,9 +747,12 @@ pl_bin:
         push    r13
         push    r14
         push    r15
-        sub     rsp, 168
+        sub     rsp, 232
         lea     r15, [rip + pl]
         mov     [rsp], esi
+        mov     eax, [r15 + PL_NRANGE]
+        add     eax, eax
+        mov     [rsp + 12], eax                 # 2 * ranges per cell
         mov     ebp, edi
         vbroadcastss ymm14, [r15 + PL_CORES]
         vmovups [rsp + 32], ymm14
@@ -701,7 +761,7 @@ pl_bin:
         vxorps  xmm21, xmm21, xmm21
         vbroadcastss zmm22, [r15 + PL_CORES]
         vbroadcastss zmm23, [rip + F_EPS]
-        vbroadcastss zmm24, [rip + V_HALF]
+        vbroadcastss zmm26, [rip + F_TWO]
         vbroadcastss zmm27, [rip + V_THREE]
 .else
         vbroadcastss ymm12, [rip + F_ONE]
@@ -735,7 +795,7 @@ pl_bin:
         mov     r9, [rbx + rcx*8 + 8]
         mov     [rsp + 72 + rcx*8], r9
         add     ecx, 2
-        cmp     ecx, 12
+        cmp     ecx, [rsp + 12]
         jb      .L\name\()_fill
 
 .L\name\()_i:
@@ -757,10 +817,30 @@ pl_bin:
 .else
         vxorps  xmm2, xmm2, xmm2
         vxorps  xmm3, xmm3, xmm3
-.if \mode == 0
-        vbroadcastss ymm14, [r15 + PL_CORES]
 .endif
-.endif
+.if \mode == 2
+        # all vectors of all ranges form one stream through the 2-stage
+        # pipeline; NEXTVEC sets k1 for the next 16 j or jumps to \done
+        mov     ecx, -2                         # range index * 2
+        xor     r10d, r10d                      # j
+        xor     r11d, r11d                      # end of current range
+        NEXTVEC \name, .L\name\()_fin
+        S1_512  zmm4, zmm5, zmm10, zmm11, zmm8
+.L\name\()_stream:
+        NEXTVEC \name, .L\name\()_finA
+        S1_512  zmm12, zmm13, zmm14, zmm15, zmm24
+        S2_512  zmm4, zmm5, zmm10, zmm11, zmm8
+        NEXTVEC \name, .L\name\()_finB
+        S1_512  zmm4, zmm5, zmm10, zmm11, zmm8
+        S2_512  zmm12, zmm13, zmm14, zmm15, zmm24
+        jmp     .L\name\()_stream
+.L\name\()_finA:
+        S2_512  zmm4, zmm5, zmm10, zmm11, zmm8
+        jmp     .L\name\()_fin
+.L\name\()_finB:
+        S2_512  zmm12, zmm13, zmm14, zmm15, zmm24
+.L\name\()_fin:
+.else
         xor     ecx, ecx                        # range index * 2
 .L\name\()_range:
         mov     r10d, [rsp + 64 + rcx*8]
@@ -771,32 +851,6 @@ pl_bin:
         vsubss  xmm0, xmm0, [rsp + 72 + rcx*8]
         vmovss  xmm1, [rsp + 8]
         vsubss  xmm1, xmm1, [rsp + 76 + rcx*8]
-.if \mode == 2
-        vbroadcastss zmm0, xmm0
-        vbroadcastss zmm1, xmm1
-        kxnorw  k1, k1, k1
-        lea     eax, [r10d + 16]
-        cmp     eax, r11d
-        ja      .L\name\()_tail
-.L\name\()_vec:
-        BODY512
-        add     r10d, 16
-        lea     eax, [r10d + 16]
-        cmp     eax, r11d
-        jbe     .L\name\()_vec
-.L\name\()_tail:
-        cmp     r10d, r11d
-        jae     .L\name\()_next_range
-        mov     edx, ecx
-        mov     ecx, r11d
-        sub     ecx, r10d
-        mov     eax, 1
-        shl     eax, cl
-        dec     eax
-        kmovw   k1, eax
-        mov     ecx, edx
-        BODY512
-.else
         vbroadcastss ymm0, xmm0
         vbroadcastss ymm1, xmm1
         lea     eax, [r10d + 8]
@@ -812,12 +866,12 @@ pl_bin:
         cmp     r10d, r11d
         jae     .L\name\()_next_range
         BODY2   \mode, 1
-.endif
 .L\name\()_next_range:
         add     ecx, 2
-        cmp     ecx, 12
+        cmp     ecx, [rsp + 12]
         jb      .L\name\()_range
 
+.endif
         # horizontal sums -> xmm2 = fx, xmm3 = fy
 .if \mode == 2
         vextractf64x4 ymm6, zmm2, 1
@@ -868,7 +922,7 @@ pl_bin:
         jmp     .L\name\()_cell
 .L\name\()_done:
         vzeroupper
-        add     rsp, 168
+        add     rsp, 232
         pop     r15
         pop     r14
         pop     r13

@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 typedef struct {
-    int n, k;
+    int n, k, cdiv;
     float w, h, dt, fric, fscale, core;
     uint64_t rng;
     float attr[16][16], minr[16][16], maxr[16][16];
@@ -19,7 +19,8 @@ typedef struct {
     float *nx, *ny; int *cellid, *cstart, *ccur;
 } ref_sim;
 
-void ref_init(ref_sim *s, int n, int k, float w, float h, uint64_t seed);
+/* cdiv = R: cell size >= max radius / R, (2R+1)^2 neighbour cells */
+void ref_init(ref_sim *s, int n, int k, float w, float h, uint64_t seed, int cdiv);
 void ref_set_params(ref_sim *s, float dt, float fric, float fscale, float core);
 void ref_step(ref_sim *s);        /* grid version, same algorithm as asm */
 void ref_step_brute(ref_sim *s);  /* O(N^2) minimum-image version */

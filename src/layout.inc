@@ -45,11 +45,13 @@
 .set PL_NCELLS,   208   # u32
 .set PL_MAXR,     212   # f32  global max radius
 .set PL_SIMD,     216   # u32  1 = AVX2, 2 = AVX-512
-.set PL_CORES,    220   # f32  core * force_scale
+.set PL_CORES,    220   # f32  core * force_scale / 2
 .set PL_DAMP,     224   # f32  1 - friction*dt
 .set PL_CELLCAP,  228   # u32  allocated cells
-.set PL_NBR,      232   # ptr  per-cell neighbour ranges, 6 x {u32 c0, u32 c1, f32 sx, f32 sy}
+.set PL_NBR,      232   # ptr  per-cell neighbour ranges, NRANGE x {u32 c0, u32 c1, f32 sx, f32 sy}
 .set PL_KERNEL,   240   # ptr  force kernel(c_begin, c_end)
+.set PL_CDIV,     248   # u32  R: cell size = max radius / R, (2R+1)^2 neighbour cells
+.set PL_NRANGE,   252   # u32  ranges per cell = 2 * (2R + 1)
 
 # rule tables, row-major, 16 floats per row (64 bytes): [ki*16 + kj]
 .set PL_ATTR,     256
@@ -57,11 +59,12 @@
 .set PL_MAXRT,    2304
 # derived per-pair tables used by the kernels (consecutive, 1024 bytes apart)
 .set PL_TB0,      3328  # maxr / (maxr - minr)
-.set PL_TIR,      4352  # 1 / (maxr - minr)
+.set PL_TIR,      4352  # 1 / (maxr - minr) / 2
 .set PL_TC1,      5376  # core*force_scale / minr
-.set PL_TAS,      6400  # attraction * force_scale
+.set PL_TAS,      6400  # -attraction * force_scale / 2
 .set PL_SIZE,     7424
 
 .set PAD,         32    # padding elements per array
 .set MAXK,        16
-.set NBR_STRIDE,  96    # 6 ranges * 16 bytes
+.set MAXCDIV,     2
+.set NBR_STRIDE,  160   # up to 10 ranges * 16 bytes

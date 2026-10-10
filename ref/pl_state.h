@@ -18,7 +18,7 @@ typedef struct {
     uint32_t ncells; float maxr;
     uint32_t simd; float cores; float damp; uint32_t cellcap;
     void *nbr; void *kernel;
-    uint8_t _pad[256 - 248];
+    uint32_t cdiv, nrange;
     float attr[256], minr[256], maxr_t[256];
     float tb0[256], tir[256], tc1[256], tas[256];
 } pl_state;

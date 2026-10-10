@@ -29,17 +29,20 @@ static float rng_range(ref_sim *s, float a, float b)
 
 static void update_pairs(ref_sim *s)
 {
-    s->cores = s->core * s->fscale;
+    float core_s = s->core * s->fscale;
+    s->cores = core_s * 0.5f;
     s->damp = 1.0f - s->fric * s->dt;
     float g = 0.0f;
     for (int i = 0; i < s->k; i++)
         for (int j = 0; j < s->k; j++) {
             float mn = s->minr[i][j], mx = s->maxr[i][j];
             g = fmaxf(g, mx);
-            s->ir[i][j] = 1.0f / (mx - mn);
-            s->b0[i][j] = mx * s->ir[i][j];
-            s->c1[i][j] = s->cores / mn;
-            s->as[i][j] = s->attr[i][j] * s->fscale;
+            /* same folded tables as the asm (see src/sim.S header) */
+            float ir = 1.0f / (mx - mn);
+            s->b0[i][j] = mx * ir;
+            s->ir[i][j] = ir * 0.5f;
+            s->c1[i][j] = core_s / mn;
+            s->as[i][j] = s->attr[i][j] * s->fscale * -0.5f;
         }
     s->gmaxr = g;
 }
@@ -47,11 +50,12 @@ static void update_pairs(ref_sim *s)
 static void update_tables(ref_sim *s)
 {
     update_pairs(s);
-    float g = s->gmaxr;
+    const int R = s->cdiv;
+    float g = s->gmaxr / (float)R;
     s->cols = (int)(s->w / g);
-    if (s->cols < 3) s->cols = 3;
+    if (s->cols < 2 * R + 1) s->cols = 2 * R + 1;
     s->rows = (int)(s->h / g);
-    if (s->rows < 3) s->rows = 3;
+    if (s->rows < 2 * R + 1) s->rows = 2 * R + 1;
     s->cw = s->w / (float)s->cols;
     s->ch = s->h / (float)s->rows;
     s->icw = 1.0f / s->cw;
@@ -95,10 +99,10 @@ static void ref_bin(ref_sim *s)
 #undef SWAP
 }
 
-void ref_init(ref_sim *s, int n, int k, float w, float h, uint64_t seed)
+void ref_init(ref_sim *s, int n, int k, float w, float h, uint64_t seed, int cdiv)
 {
     memset(s, 0, sizeof *s);
-    s->n = n; s->k = k; s->w = w; s->h = h;
+    s->n = n; s->k = k; s->w = w; s->h = h; s->cdiv = cdiv;
     s->dt = 1.0f / 60.0f; s->fric = 0.4f; s->fscale = 0.3f; s->core = 0.6f;
     s->rng = seed;
     for (int i = 0; i < k; i++)
@@ -146,24 +150,24 @@ static inline void integrate(ref_sim *s, int i, float fx, float fy)
 
 void ref_step(ref_sim *s)
 {
-    const int cols = s->cols, rows = s->rows;
+    const int cols = s->cols, rows = s->rows, R = s->cdiv;
     for (int cy = 0; cy < rows; cy++)
         for (int cx = 0; cx < cols; cx++) {
             int c = cy * cols + cx;
-            /* up to 6 contiguous particle ranges with their wrap shift */
-            int r0[6], r1[6], nr = 0;
-            float rsx[6], rsy[6];
-            for (int d = -1; d <= 1; d++) {
+            /* contiguous particle ranges (one or two per neighbour row) with their wrap shift */
+            int r0[10], r1[10], nr = 0;
+            float rsx[10], rsy[10];
+            for (int d = -R; d <= R; d++) {
                 int ry = cy + d;
                 float sy = 0.0f;
-                if (ry < 0) { ry = rows - 1; sy = -s->h; }
-                else if (ry >= rows) { ry = 0; sy = s->h; }
-                int base = ry * cols;
+                if (ry < 0) { ry += rows; sy = -s->h; }
+                else if (ry >= rows) { ry -= rows; sy = s->h; }
+                int base = ry * cols, lo = cx - R, hi = cx + R;
                 int a0, a1, b0 = -1, b1 = -1;
                 float bsx = 0.0f;
-                if (cx == 0) { a0 = base; a1 = base + 2; b0 = base + cols - 1; b1 = base + cols; bsx = -s->w; }
-                else if (cx == cols - 1) { a0 = base + cols - 2; a1 = base + cols; b0 = base; b1 = base + 1; bsx = s->w; }
-                else { a0 = base + cx - 1; a1 = base + cx + 2; }
+                if (lo < 0) { a0 = base; a1 = base + hi + 1; b0 = base + cols + lo; b1 = base + cols; bsx = -s->w; }
+                else if (hi >= cols) { a0 = base + lo; a1 = base + cols; b0 = base; b1 = base + hi - cols + 1; bsx = s->w; }
+                else { a0 = base + lo; a1 = base + hi + 1; }
                 r0[nr] = s->cstart[a0]; r1[nr] = s->cstart[a1]; rsx[nr] = 0.0f; rsy[nr] = sy; nr++;
                 if (b0 >= 0) { r0[nr] = s->cstart[b0]; r1[nr] = s->cstart[b1]; rsx[nr] = bsx; rsy[nr] = sy; nr++; }
             }
@@ -176,17 +180,17 @@ void ref_step(ref_sim *s)
                     const float bx = s->x[i] - rsx[r], by = s->y[i] - rsy[r];
                     for (int j = r0[r]; j < r1[r]; j++) {
                         float dx = s->x[j] - bx, dy = s->y[j] - by;
-                        float d2 = fmaxf(dx * dx + dy * dy, 1e-8f);
-                        float inv = 1.0f / sqrtf(d2);
-                        float dist = d2 * inv;
+                        float d2 = fmaf(dx, dx, fmaf(dy, dy, 1e-8f));
+                        float i2 = 2.0f / sqrtf(d2);     /* 2/d */
+                        float dd = d2 * i2;              /* 2d  */
                         int kj = s->t[j];
-                        float sv = b0[kj] - dist * ir[kj];
-                        float sc = fminf(fmaxf(sv, 0.0f), 1.0f);
-                        float f = sv > 1.0f ? dist * c1[kj] - cores
-                                            : as[kj] * (sc * sc * (3.0f - 2.0f * sc));
-                        f *= inv;
-                        fx += f * dx;
-                        fy += f * dy;
+                        float sv = b0[kj] - dd * ir[kj]; /* (maxr-d)/(maxr-minr) */
+                        float sc = fmaxf(sv, 0.0f); /* sv > 1 takes the core branch */
+                        /* g = force / d */
+                        float g = sv > 1.0f ? c1[kj] - cores * i2
+                                            : as[kj] * i2 * (sc * sc) * (sc + sc - 3.0f);
+                        fx += g * dx;
+                        fy += g * dy;
                     }
                 }
                 integrate(s, i, fx, fy);
