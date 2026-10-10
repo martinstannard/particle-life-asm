@@ -3,7 +3,7 @@ CC        = gcc
 CFLAGS    = -O3 -march=native -Wall -Wextra -g
 BUILD     = build
 
-CORE_OBJ  = $(BUILD)/sim.o $(BUILD)/threads.o $(BUILD)/presets.o
+CORE_OBJ  = $(BUILD)/sim.o $(BUILD)/threads.o $(BUILD)/presets.o $(BUILD)/spawn.o
 APP_OBJ   = $(BUILD)/main.o $(BUILD)/render.o $(CORE_OBJ)
 
 ARGS     ?=
@@ -41,11 +41,15 @@ $(BUILD)/test_step: tests/test_step.c $(BUILD)/ref.o $(CORE_OBJ) ref/pl_state.h
 $(BUILD)/test_presets: tests/test_presets.c $(BUILD)/ref.o $(CORE_OBJ) ref/pl_state.h
 	$(CC) $(CFLAGS) -o $@ tests/test_presets.c $(BUILD)/ref.o $(CORE_OBJ) -lm -lpthread
 
+$(BUILD)/test_spawns: tests/test_spawns.c $(BUILD)/ref.o $(CORE_OBJ) ref/pl_state.h
+	$(CC) $(CFLAGS) -o $@ tests/test_spawns.c $(BUILD)/ref.o $(CORE_OBJ) -lm -lpthread
+
 run: $(BUILD)/particle_life
 	./$(BUILD)/particle_life $(ARGS)
 
-test: $(BUILD)/test_step $(BUILD)/test_presets $(BUILD)/particle_life
+test: $(BUILD)/test_step $(BUILD)/test_presets $(BUILD)/test_spawns $(BUILD)/particle_life
 	./$(BUILD)/test_step
+	./$(BUILD)/test_spawns tests/plbox_spawns.txt
 	./$(BUILD)/test_presets tests/plbox_ref.txt
 	sh tests/test_cycle.sh ./$(BUILD)/particle_life
 
