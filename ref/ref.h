@@ -21,6 +21,14 @@ typedef struct {
 
 /* cdiv = R: cell size >= max radius / R, (2R+1)^2 neighbour cells */
 void ref_init(ref_sim *s, int n, int k, float w, float h, uint64_t seed, int cdiv);
+/* state copied from elsewhere (e.g. the asm after a preset switch): rule
+   tables with 16-float rows, particles in any order; derives the tables and
+   grid from these rules and bins */
+void ref_load(ref_sim *s, int n, int k, float w, float h, int cdiv,
+              float dt, float fric, float fscale, float core,
+              const float *attr, const float *minr, const float *maxr,
+              const float *x, const float *y, const float *vx, const float *vy,
+              const int *t, const int *id);
 void ref_set_params(ref_sim *s, float dt, float fric, float fscale, float core);
 void ref_step(ref_sim *s);        /* grid version, same algorithm as asm */
 void ref_step_brute(ref_sim *s);  /* O(N^2) minimum-image version */

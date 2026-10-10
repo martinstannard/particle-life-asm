@@ -40,4 +40,15 @@ void pl_bin(void);
 void pl_step(void);
 int pl_cpu_features(void);
 int pl_threads_start(uint32_t n);
+/* src/presets.S */
+#define PL_NPRESETS 31
+extern const char *pl_preset_names[PL_NPRESETS];
+extern const float pl_preset_phys[PL_NPRESETS][8]; /* fscale fric core minr0 minr1 maxr0 maxr1 - */
+extern int32_t pl_preset_cur;
+extern uint32_t pl_preset_shown;
+void pl_preset_attraction(uint32_t p, uint32_t k, float *out);
+void pl_preset_rules(uint32_t p);
+void pl_preset_apply(uint32_t p);
+uint32_t pl_preset_pick(void);
+int pl_preset_find(const char *name);
 #endif

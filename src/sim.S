@@ -92,6 +92,7 @@ pl_rng_f01:
         ret
 
 # xmm0 = fma(b - a, u, a) for a = xmm0, b = xmm1. Clobbers xmm2, xmm3.
+        .globl pl_rng_range
 pl_rng_range:
         vmovaps xmm2, xmm0
         vsubss  xmm3, xmm1, xmm0

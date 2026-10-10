@@ -125,6 +125,37 @@ void ref_init(ref_sim *s, int n, int k, float w, float h, uint64_t seed, int cdi
     ref_bin(s);
 }
 
+void ref_load(ref_sim *s, int n, int k, float w, float h, int cdiv,
+              float dt, float fric, float fscale, float core,
+              const float *attr, const float *minr, const float *maxr,
+              const float *x, const float *y, const float *vx, const float *vy,
+              const int *t, const int *id)
+{
+    memset(s, 0, sizeof *s);
+    s->n = n; s->k = k; s->w = w; s->h = h; s->cdiv = cdiv;
+    s->dt = dt; s->fric = fric; s->fscale = fscale; s->core = core;
+    for (int i = 0; i < k; i++)
+        for (int j = 0; j < k; j++) {
+            s->attr[i][j] = attr[i * 16 + j];
+            s->minr[i][j] = minr[i * 16 + j];
+            s->maxr[i][j] = maxr[i * 16 + j];
+        }
+    update_tables(s);
+    float **fa[] = {&s->x, &s->y, &s->vx, &s->vy, &s->x2, &s->y2, &s->vx2, &s->vy2, &s->nx, &s->ny};
+    for (unsigned a = 0; a < sizeof fa / sizeof *fa; a++) *fa[a] = calloc(n + 32, sizeof(float));
+    int **ia[] = {&s->t, &s->id, &s->t2, &s->id2, &s->cellid};
+    for (unsigned a = 0; a < sizeof ia / sizeof *ia; a++) *ia[a] = calloc(n + 32, sizeof(int));
+    if (n > 0) {
+        memcpy(s->nx, x, n * sizeof(float));
+        memcpy(s->ny, y, n * sizeof(float));
+        memcpy(s->vx, vx, n * sizeof(float));
+        memcpy(s->vy, vy, n * sizeof(float));
+        memcpy(s->t, t, n * sizeof(int));
+        memcpy(s->id, id, n * sizeof(int));
+    }
+    ref_bin(s);
+}
+
 void ref_set_params(ref_sim *s, float dt, float fric, float fscale, float core)
 {
     s->dt = dt; s->fric = fric; s->fscale = fscale; s->core = core;
