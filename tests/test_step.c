@@ -143,6 +143,8 @@ int main(void)
     fails += run(30000, 9, 1920, 1080, 5, 1, 1, 30, 0);
     if (feat & 2) fails += run(30000, 9, 1920, 1080, 5, 2, 1, 30, 0);
     fails += run(30000, 9, 1920, 1080, 5, 1, 8, 30, 0);     /* multi-threaded */
+    if (feat & 2) fails += run(30000, 9, 1920, 1080, 5, 2, 8, 30, 0);
+    fails += run(100, 3, 300, 256, 6, 2 - !(feat & 2), 8, 30, 1); /* fewer particles than 16 per thread */
     }
     puts(fails ? "FAILED" : "ALL TESTS PASSED");
     return fails != 0;
