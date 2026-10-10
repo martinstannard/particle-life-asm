@@ -562,17 +562,277 @@ pl_bin:
         SCATTER PL_T,  PL_T2
         SCATTER PL_ID, PL_ID2
 
-        # swap sets
-        vmovdqu ymm0, [r15 + PL_X]
-        vmovdqu ymm1, [r15 + PL_X2]
-        vmovdqu xmm2, [r15 + PL_X + 32]
-        vmovdqu xmm3, [r15 + PL_X2 + 32]
-        vmovdqu [r15 + PL_X2], ymm0
-        vmovdqu [r15 + PL_X], ymm1
-        vmovdqu [r15 + PL_X2 + 32], xmm2
-        vmovdqu [r15 + PL_X + 32], xmm3
-        vzeroupper
         pop     r15
+        pop     r14
+        pop     r13
+        pop     r12
+        pop     rbx
+        # fall through
+
+# void pl_swap_sets(void): exchange the current and the second particle set
+        .globl pl_swap_sets
+pl_swap_sets:
+        lea     rax, [rip + pl]
+        vmovdqu ymm0, [rax + PL_X]
+        vmovdqu ymm1, [rax + PL_X2]
+        vmovdqu xmm2, [rax + PL_X + 32]
+        vmovdqu xmm3, [rax + PL_X2 + 32]
+        vmovdqu [rax + PL_X2], ymm0
+        vmovdqu [rax + PL_X], ymm1
+        vmovdqu [rax + PL_X2 + 32], xmm2
+        vmovdqu [rax + PL_X + 32], xmm3
+        vzeroupper
+        ret
+
+# ---------------------------------------------------------------- parallel bin
+# The same stable counting sort split over T threads (called by threads.S
+# between barriers): particle chunk t = [lo, hi) with 16-aligned bounds,
+# per-thread histograms hist[t][c], cell blocks for the prefix sum. The
+# resulting order is identical to pl_bin.
+
+        .globl pbin_hist, pbin_cap
+        .bss
+        .balign 8
+pbin_hist:      .skip 8                 # u32 [T][ncells+1]
+pbin_cap:       .skip 4                 # allocated u32 entries
+        .balign 64
+pbin_blocksum:  .skip 4 * 64
+        .text
+
+# (eax, edx) = bounds [lo, hi) of part edi of esi items, lo 16-aligned.
+# Clobbers rcx, r8, r9.
+pbounds:
+        mov     r8d, [rip + pl + PL_NTHREADS]
+        mov     r9d, esi
+        mov     eax, esi
+        imul    rax, rdi
+        xor     edx, edx
+        div     r8
+        and     eax, -16
+        mov     ecx, eax                        # lo
+        lea     eax, [edi + 1]
+        cmp     eax, r8d
+        jae     1f
+        imul    rax, r9
+        xor     edx, edx
+        div     r8
+        and     eax, -16
+        mov     edx, eax
+        mov     eax, ecx
+        ret
+1:      mov     edx, r9d
+        mov     eax, ecx
+        ret
+
+# phase 1: cell ids of chunk t, run-length counts into hist[t]
+        .globl pl_pbin_count
+pl_pbin_count:
+        push    rbx
+        push    r12
+        push    r13
+        push    r14
+        push    r15
+        lea     r15, [rip + pl]
+        mov     r12d, edi
+        mov     esi, [r15 + PL_N]
+        call    pbounds
+        mov     r13d, eax                       # lo
+        mov     r14d, edx                       # hi
+        mov     ecx, [r15 + PL_NCELLS]
+        inc     ecx
+        mov     eax, ecx
+        imul    eax, r12d
+        mov     rbx, [rip + pbin_hist]
+        lea     rbx, [rbx + rax*4]              # hist[t]
+        mov     rdi, rbx
+        xor     eax, eax
+        rep stosd
+
+        mov     r8, [r15 + PL_NX]
+        mov     r9, [r15 + PL_NY]
+        mov     r10, [r15 + PL_CELLID]
+        vbroadcastss ymm4, [r15 + PL_ICW]
+        vbroadcastss ymm5, [r15 + PL_ICH]
+        vpbroadcastd ymm8, [r15 + PL_COLS]
+        vpcmpeqd ymm9, ymm9, ymm9
+        vpaddd  ymm6, ymm8, ymm9
+        vpbroadcastd ymm7, [r15 + PL_ROWS]
+        vpaddd  ymm7, ymm7, ymm9
+        mov     esi, r13d
+1:      cmp     esi, r14d
+        jae     2f
+        vmulps  ymm0, ymm4, [r8 + rsi*4]
+        vcvttps2dq ymm0, ymm0
+        vpminud ymm0, ymm0, ymm6
+        vmulps  ymm1, ymm5, [r9 + rsi*4]
+        vcvttps2dq ymm1, ymm1
+        vpminud ymm1, ymm1, ymm7
+        vpmulld ymm1, ymm1, ymm8
+        vpaddd  ymm0, ymm0, ymm1
+        vmovdqu [r10 + rsi*4], ymm0
+        add     esi, 8
+        jmp     1b
+2:      vzeroupper
+        cmp     r13d, r14d
+        jae     5f
+        mov     esi, r13d
+        mov     edx, [r10 + rsi*4]              # current cell
+        xor     ecx, ecx
+3:      mov     eax, [r10 + rsi*4]
+        cmp     eax, edx
+        je      4f
+        add     [rbx + rdx*4], ecx
+        mov     edx, eax
+        xor     ecx, ecx
+4:      inc     ecx
+        inc     esi
+        cmp     esi, r14d
+        jb      3b
+        add     [rbx + rdx*4], ecx
+5:      pop     r15
+        pop     r14
+        pop     r13
+        pop     r12
+        pop     rbx
+        ret
+
+# phase 2: total count of cell block t over all threads
+        .globl pl_pbin_sum
+pl_pbin_sum:
+        push    rbx
+        push    r12
+        mov     r12d, edi
+        mov     esi, [rip + pl + PL_NCELLS]
+        call    pbounds
+        mov     r10d, [rip + pl + PL_NCELLS]
+        inc     r10d                            # hist stride
+        mov     r11d, [rip + pl + PL_NTHREADS]
+        mov     rbx, [rip + pbin_hist]
+        xor     r9d, r9d                        # sum
+        xor     r8d, r8d                        # t'
+1:      cmp     r8d, r11d
+        jae     3f
+        mov     ecx, eax
+2:      cmp     ecx, edx
+        jae     21f
+        add     r9d, [rbx + rcx*4]
+        inc     ecx
+        jmp     2b
+21:     lea     rbx, [rbx + r10*4]
+        inc     r8d
+        jmp     1b
+3:      lea     rcx, [rip + pbin_blocksum]
+        mov     [rcx + r12*4], r9d
+        pop     r12
+        pop     rbx
+        ret
+
+# phase 3: cell starts and per-thread cursors for cell block t
+        .globl pl_pbin_offsets
+pl_pbin_offsets:
+        push    rbx
+        push    r12
+        push    r13
+        mov     r12d, edi
+        mov     esi, [rip + pl + PL_NCELLS]
+        call    pbounds
+        lea     rcx, [rip + pbin_blocksum]
+        xor     r9d, r9d                        # base
+        xor     r8d, r8d
+1:      cmp     r8d, r12d
+        jae     2f
+        add     r9d, [rcx + r8*4]
+        inc     r8d
+        jmp     1b
+2:      mov     r10d, [rip + pl + PL_NCELLS]
+        inc     r10d                            # stride
+        mov     r11d, [rip + pl + PL_NTHREADS]
+        mov     rbx, [rip + pbin_hist]
+        mov     r13, [rip + pl + PL_CSTART]
+        mov     ecx, eax                        # c
+3:      cmp     ecx, edx
+        jae     5f
+        mov     [r13 + rcx*4], r9d
+        lea     rsi, [rbx + rcx*4]
+        xor     r8d, r8d
+4:      mov     eax, [rsi]
+        mov     [rsi], r9d
+        add     r9d, eax
+        lea     rsi, [rsi + r10*4]
+        inc     r8d
+        cmp     r8d, r11d
+        jb      4b
+        inc     ecx
+        jmp     3b
+5:      lea     eax, [r12d + 1]
+        cmp     eax, r11d
+        jne     6f
+        mov     ecx, [rip + pl + PL_NCELLS]
+        mov     eax, [rip + pl + PL_N]
+        mov     [r13 + rcx*4], eax
+6:      pop     r13
+        pop     r12
+        pop     rbx
+        ret
+
+# phase 4: destinations of chunk t from its cursors, then scatter it
+.macro PSCATTER src, dst
+        mov     r8, [r15 + \src]
+        mov     r9, [r15 + \dst]
+        mov     esi, r13d
+1:      cmp     esi, r14d
+        jae     2f
+        mov     eax, [r10 + rsi*4]
+        mov     ecx, [r8 + rsi*4]
+        mov     [r9 + rax*4], ecx
+        inc     esi
+        jmp     1b
+2:
+.endm
+
+        .globl pl_pbin_scatter
+pl_pbin_scatter:
+        push    rbx
+        push    r12
+        push    r13
+        push    r14
+        push    r15
+        lea     r15, [rip + pl]
+        mov     r12d, edi
+        mov     esi, [r15 + PL_N]
+        call    pbounds
+        mov     r13d, eax
+        mov     r14d, edx
+        cmp     r13d, r14d
+        jae     9f
+        mov     eax, [r15 + PL_NCELLS]
+        inc     eax
+        imul    eax, r12d
+        mov     rbx, [rip + pbin_hist]
+        lea     rbx, [rbx + rax*4]              # cursors of thread t
+        mov     r10, [r15 + PL_CELLID]
+        mov     esi, r13d
+        mov     edx, [r10 + rsi*4]
+        mov     ecx, [rbx + rdx*4]
+1:      mov     eax, [r10 + rsi*4]
+        cmp     eax, edx
+        je      2f
+        mov     [rbx + rdx*4], ecx
+        mov     edx, eax
+        mov     ecx, [rbx + rdx*4]
+2:      mov     [r10 + rsi*4], ecx
+        inc     ecx
+        inc     esi
+        cmp     esi, r14d
+        jb      1b
+        mov     [rbx + rdx*4], ecx
+        PSCATTER PL_NX, PL_X2
+        PSCATTER PL_NY, PL_Y2
+        PSCATTER PL_VX, PL_VX2
+        PSCATTER PL_VY, PL_VY2
+        PSCATTER PL_T,  PL_T2
+        PSCATTER PL_ID, PL_ID2
+9:      pop     r15
         pop     r14
         pop     r13
         pop     r12
@@ -944,8 +1204,8 @@ pl_step:
         lea     rbx, [rip + pl]
         cmp     dword ptr [rbx + PL_NTHREADS], 1
         jbe     1f
-        call    pl_mt_forces
-        jmp     2f
+        pop     rbx
+        jmp     pl_mt_step                      # forces and bin on all threads
 1:      xor     edi, edi
         mov     esi, [rbx + PL_NCELLS]
         call    [rbx + PL_KERNEL]
