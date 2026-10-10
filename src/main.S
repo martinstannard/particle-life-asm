@@ -14,6 +14,9 @@
 .set SDL_KEYDOWN,           0x300
 .set SDLK_KP_MINUS,         0x40000056
 .set SDLK_KP_PLUS,          0x40000057
+.set SDLK_RIGHT,            0x4000004F
+.set SDLK_LEFT,             0x40000050
+.set NPRESETS,              31
 .set CLOCK_MONOTONIC,       1
 .set SC_NPROCESSORS_ONLN,   84
 .set MAX_PARTICLES,         4000000
@@ -34,12 +37,35 @@ s_spf:       .asciz "--steps-per-frame"
 s_novsync:   .asciz "--no-vsync"
 s_cdiv:      .asciz "--cell-div"
 s_keys:      .asciz "--keys"
+s_preset:    .asciz "--preset"
+s_interval:  .asciz "--interval"
+s_nocycle:   .asciz "--no-cycle"
+s_list:      .asciz "--list-presets"
+s_headless:  .asciz "--headless"
+s_fake:      .asciz "--fake-clock"
+s_log:       .asciz "--log-switches"
+s_r_start:   .asciz "start"
+s_r_timer:   .asciz "timer"
+s_r_next:    .asciz "next"
+s_r_prev:    .asciz "prev"
+s_r_reroll:  .asciz "reroll"
+s_r_types:   .asciz "types"
+s_switch:    .asciz "%9.3f s  %-6s -> %2u %-13s  %6.2f ms  K=%u maxr %.1f grid %ux%u force %.2f fric %.2f core %.2f\n"
+s_cycle_log: .asciz "%9.3f s  auto-cycle %s\n"
+s_on:        .asciz "on"
+s_off:       .asciz "off"
+s_next_in:   .asciz "next in %.0f s"
+s_cycoff:    .asciz "auto-cycle off"
+s_rules:     .asciz "random rules"
+s_listfmt:   .asciz "%2u  %s\n"
+s_badpreset: .asciz "unknown preset '%s' (see --list-presets)\n"
+s_headdone:  .asciz "headless: %u frames x %u steps, %u preset switches, clock %.3f s\n"
 s_avx2:      .asciz "avx2"
 s_avx512:    .asciz "avx512"
 s_name_avx2: .asciz "avx2"
 s_name_512:  .asciz "avx512"
 s_title0:    .asciz "Particle Life (asm)"
-s_title:     .asciz "Particle Life (asm) | %u particles, %u types | %.0f fps | step %.2f ms | %u threads %s%s"
+s_title:     .asciz "Particle Life (asm) | %s (%u/31) | %s | %u particles, %u types | %.0f fps | step %.2f ms | %u threads %s%s"
 s_paused:    .asciz " | PAUSED"
 s_empty:     .asciz ""
 s_usage:     .ascii "usage: particle_life [--particles N] [--types K(1-16)] [--seed S]\n"
@@ -48,27 +74,37 @@ s_usage:     .ascii "usage: particle_life [--particles N] [--types K(1-16)] [--s
              .ascii "         [--steps-per-frame S] [--no-vsync]\n"
              .ascii "         [--bench STEPS [--warmup STEPS]]   headless benchmark\n"
              .ascii "         [--dump-frame out.ppm [--steps STEPS]] headless, writes one frame\n"
-             .ascii "         [--keys STR]  feed key presses (e.g. \"r9+\") to the key handler first\n"
-             .asciz "keys: Space pause, R new rules, N new positions, +/- particles, 1-9 types, Esc quit\n"
+             .ascii "         [--preset NAME] [--interval SECONDS (default 20, 0 = off)] [--no-cycle]\n"
+             .ascii "         [--list-presets]\n"
+             .ascii "         [--headless FRAMES [--fake-clock SECONDS_PER_FRAME]] no window, runs the\n"
+             .ascii "                       frame loop (steps, auto-cycle) and logs switches\n"
+             .ascii "         [--log-switches]\n"
+             .ascii "         [--keys STR]  feed key presses (e.g. \"r9+\") to the key handler first;\n"
+             .ascii "                       '>' and '<' stand for Right and Left\n"
+             .ascii "keys: Space pause, Right/Left next/previous preset, C auto-cycle on/off,\n"
+             .ascii "      R re-roll the current preset, N new positions, +/- particles,\n"
+             .asciz "      1-9 types, Esc quit\n"
 s_noavx2:    .asciz "error: this program needs a CPU with AVX2 and FMA\n"
 s_no512:     .asciz "error: AVX-512F not available on this CPU\n"
 s_nomem:     .asciz "error: out of memory\n"
 s_sdlerr:    .asciz "SDL error: %s\n"
 s_bench_hdr: .asciz "asm   simd=%s threads=%u particles=%u types=%u world=%ux%u cell-div=%u steps=%u (after %u warmup)\n"
 s_bench_res: .asciz "      %.1f steps/s  %.3f ms/step  %.2f ns/particle-step\n"
-s_dumped:    .asciz "wrote %s (%ux%u, after %u steps, %u particles)\n"
+s_dumped:    .asciz "wrote %s (%ux%u, after %u steps, %u particles, %s)\n"
 s_dumpfail:  .asciz "error: could not write %s\n"
         .balign 8
 D_1E9:       .double 1.0e-9
 D_1E3:       .double 1000.0
 D_1E9I:      .double 1.0e9
 D_HALF:      .double 0.5
+D_ZERO:      .double 0.0
 F_DT:        .float 0.016666668
 F_FRIC:      .float 0.4
 F_FSCALE:    .float 0.3
 F_CORE:      .float 0.6
 
-# option table: {name, dest, kind} kind 0 = u32, 1 = u64, 2 = string, 3 = flag
+# option table: {name, dest, kind} kind 0 = u32, 1 = u64, 2 = string, 3 = flag,
+# 4 = double
         .section .data.rel.ro, "aw"
         .balign 8
 opts:
@@ -87,6 +123,13 @@ opts:
         .quad s_novsync,   opt_novsync, 3
         .quad s_cdiv,      opt_cdiv,    0
         .quad s_keys,      opt_keys,    2
+        .quad s_preset,    opt_preset,  2
+        .quad s_interval,  opt_interval, 4
+        .quad s_nocycle,   opt_nocycle, 3
+        .quad s_list,      opt_list,    3
+        .quad s_headless,  opt_headless, 0
+        .quad s_fake,      opt_fake,    4
+        .quad s_log,       opt_log,     3
         .quad 0
 
         .data
@@ -95,6 +138,9 @@ opt_seed:    .quad 1
 opt_simd:    .quad 0
 opt_dump:    .quad 0
 opt_keys:    .quad 0
+opt_preset:  .quad 0
+opt_interval: .double 20.0
+opt_fake:    .double 0.0
 opt_n:       .long 20000
 opt_k:       .long 6
 opt_w:       .long 1600
@@ -106,6 +152,11 @@ opt_steps:   .long 600
 opt_spf:     .long 2
 opt_novsync: .long 0
 opt_cdiv:    .long 2
+opt_nocycle: .long 0
+opt_list:    .long 0
+opt_headless: .long 0
+opt_log:     .long 0
+start_preset: .long -1
 
         .bss
         .balign 64
@@ -116,6 +167,12 @@ ren:         .skip 8
 tex:         .skip 8
 pixels:      .skip 8
 paused:      .skip 4
+cycle_on:    .skip 4
+switches:    .skip 4
+        .balign 8
+deadline:    .skip 8                # clock time of the next automatic switch
+fake_now:    .skip 8
+cbuf:        .skip 48
 
         .text
 
@@ -180,8 +237,15 @@ parse_args:
         jae     usage                   # missing value
         mov     rdi, [r13 + rbx*8]
         cmp     eax, 2
-        jne     5f
+        jne     41f
         mov     [r15], rdi
+        inc     ebx
+        jmp     1b
+41:     cmp     eax, 4
+        jne     5f
+        xor     esi, esi
+        call    strtod@PLT
+        vmovsd  [r15], xmm0
         inc     ebx
         jmp     1b
 5:      push    rax
@@ -234,8 +298,162 @@ setup_sim:
         jz      1f
         lea     rdi, [rip + s_nomem]
         call    die
-1:      call    pl_random_rules
+        # a preset when one was named, or always for the window and
+        # --headless; plain random rules (as before presets) for bench/dump
+1:      mov     eax, [rip + start_preset]
+        test    eax, eax
+        jns     2f
+        cmp     dword ptr [rip + opt_bench], 0
+        jne     3f
+        cmp     qword ptr [rip + opt_dump], 0
+        jne     3f
+        call    pl_preset_pick
+2:      mov     edi, eax
+        lea     rsi, [rip + s_r_start]
+        call    switch_to
+        pop     rbx
+        ret
+3:      call    pl_random_rules
         call    pl_random_particles
+        pop     rbx
+        ret
+
+# double clock_now(void): the clock that drives auto-cycling: CLOCK_MONOTONIC,
+# or the fake clock of --headless --fake-clock
+clock_now:
+        vxorpd  xmm0, xmm0, xmm0
+        vucomisd xmm0, [rip + opt_fake]
+        jae     now
+        vmovsd  xmm0, [rip + fake_now]
+        ret
+
+# switch_to(u32 p, const char *reason): install preset p (rules, physics,
+# derived tables, grid, fresh particles), restart the switch timer, log
+switch_to:
+        push    rbx
+        push    r12
+        sub     rsp, 40                 # rsp aligned; [rsp] t0, [rsp+8] ms, [rsp+16] clock
+        mov     ebx, edi
+        mov     r12, rsi
+        call    now
+        vmovsd  [rsp], xmm0
+        mov     edi, ebx
+        call    pl_preset_apply
+        call    now
+        vsubsd  xmm0, xmm0, [rsp]
+        vmulsd  xmm0, xmm0, [rip + D_1E3]
+        vmovsd  [rsp + 8], xmm0
+        call    clock_now
+        vmovsd  [rsp + 16], xmm0
+        vaddsd  xmm0, xmm0, [rip + opt_interval]
+        vmovsd  [rip + deadline], xmm0
+        inc     dword ptr [rip + switches]
+        cmp     dword ptr [rip + opt_log], 0
+        je      9f
+        lea     rdi, [rip + s_switch]
+        vmovsd  xmm0, [rsp + 16]
+        mov     rsi, r12
+        mov     edx, ebx
+        lea     rax, [rip + pl_preset_names]
+        mov     rcx, [rax + rbx*8]
+        vmovsd  xmm1, [rsp + 8]
+        mov     r8d, [rip + pl + PL_K]
+        vcvtss2sd xmm2, xmm2, [rip + pl + PL_MAXR]
+        mov     r9d, [rip + pl + PL_COLS]
+        vcvtss2sd xmm3, xmm3, [rip + pl + PL_FSCALE]
+        vcvtss2sd xmm4, xmm4, [rip + pl + PL_FRIC]
+        vcvtss2sd xmm5, xmm5, [rip + pl + PL_CORE]
+        mov     eax, [rip + pl + PL_ROWS]
+        push    rax
+        push    rax
+        mov     eax, 6
+        call    printf@PLT
+        add     rsp, 16
+9:      add     rsp, 40
+        pop     r12
+        pop     rbx
+        ret
+
+# auto-cycle: switch to a shuffle-bag pick once the clock passes the deadline
+cycle_tick:
+        push    rbx                     # rsp aligned
+        cmp     dword ptr [rip + cycle_on], 0
+        je      9f
+        call    clock_now
+        vucomisd xmm0, [rip + deadline]
+        jb      9f
+        call    pl_preset_pick
+        mov     edi, eax
+        lea     rsi, [rip + s_r_timer]
+        call    switch_to
+9:      pop     rbx
+        ret
+
+# cbuf = "next in N s" or "auto-cycle off"
+cycle_text:
+        push    rbx                     # rsp aligned
+        cmp     dword ptr [rip + cycle_on], 0
+        je      1f
+        call    clock_now
+        vmovsd  xmm1, [rip + deadline]
+        vsubsd  xmm0, xmm1, xmm0
+        vmaxsd  xmm0, xmm0, [rip + D_ZERO]
+        lea     rdi, [rip + cbuf]
+        mov     esi, 48
+        lea     rdx, [rip + s_next_in]
+        mov     eax, 1
+        call    snprintf@PLT
+        jmp     9f
+1:      lea     rdi, [rip + cbuf]
+        lea     rsi, [rip + s_cycoff]
+        call    strcpy@PLT
+9:      pop     rbx
+        ret
+
+# rax = name of the active preset
+preset_name:
+        lea     rax, [rip + s_rules]
+        movsxd  rcx, dword ptr [rip + pl_preset_cur]
+        test    rcx, rcx
+        js      1f
+        lea     rax, [rip + pl_preset_names]
+        mov     rax, [rax + rcx*8]
+1:      ret
+
+# ------------------------------------------------------------------ headless
+# the window's frame loop without SDL: opt_spf steps, then the auto-cycle
+# check, opt_headless times; with --fake-clock the clock advances a fixed
+# amount per frame
+headless:
+        push    rbx
+        push    r12
+        sub     rsp, 8                  # rsp aligned
+        mov     ebx, [rip + opt_headless]
+1:      test    ebx, ebx
+        jz      3f
+        mov     r12d, [rip + opt_spf]
+2:      test    r12d, r12d
+        jz      21f
+        call    pl_step
+        dec     r12d
+        jmp     2b
+21:     vmovsd  xmm0, [rip + fake_now]
+        vaddsd  xmm0, xmm0, [rip + opt_fake]
+        vmovsd  [rip + fake_now], xmm0
+        call    cycle_tick
+        dec     ebx
+        jmp     1b
+3:      call    clock_now
+        lea     rdi, [rip + s_headdone]
+        mov     esi, [rip + opt_headless]
+        mov     edx, [rip + opt_spf]
+        mov     ecx, [rip + switches]
+        dec     ecx                     # not counting the start
+        mov     eax, 1
+        call    printf@PLT
+        xor     eax, eax
+        add     rsp, 8
+        pop     r12
         pop     rbx
         ret
 
@@ -351,6 +569,9 @@ dump_frame:
         call    pl_write_ppm
         test    eax, eax
         jnz     3f
+        call    preset_name
+        push    rax
+        push    rax
         lea     rdi, [rip + s_dumped]
         mov     rsi, [rip + opt_dump]
         mov     edx, [rip + opt_w]
@@ -359,6 +580,7 @@ dump_frame:
         mov     r9d, [rip + pl + PL_N]
         xor     eax, eax
         call    printf@PLT
+        add     rsp, 16
         xor     eax, eax
         jmp     4f
 3:      lea     rdi, [rip + s_dumpfail]
@@ -383,11 +605,16 @@ sdl_fail:
         mov     edi, 1
         call    exit@PLT
 
-# handle one key, edi = SDL keycode; returns eax = 1 to quit
+# handle one key, edi = SDL keycode (or a --keys character: '>' / '<' for
+# Right / Left, upper case allowed); returns eax = 1 to quit
 on_key:
         push    rbx                     # rsp aligned
         mov     ebx, edi
-        xor     eax, eax
+        lea     eax, [ebx - 'A']
+        cmp     eax, 25
+        ja      0f
+        add     ebx, 32                 # to lower case
+0:      xor     eax, eax
         cmp     ebx, 27                 # Esc
         jne     1f
         mov     eax, 1
@@ -396,9 +623,15 @@ on_key:
         jne     2f
         xor     dword ptr [rip + paused], 1
         jmp     8f
-2:      cmp     ebx, 'r'
+2:      cmp     ebx, 'r'                # re-roll: same preset, next random numbers
         jne     3f
-        call    pl_random_rules
+        mov     edi, [rip + pl_preset_cur]
+        test    edi, edi
+        js      21f
+        lea     rsi, [rip + s_r_reroll]
+        call    switch_to
+        jmp     8f
+21:     call    pl_random_rules
         jmp     8f
 3:      cmp     ebx, 'n'
         jne     4f
@@ -428,13 +661,63 @@ on_key:
         mov     edi, eax
         call    set_particles
         jmp     8f
-6:      lea     eax, [ebx - '1']
+6:      cmp     ebx, SDLK_RIGHT
+        je      61f
+        cmp     ebx, '>'
+        jne     7f
+61:     mov     edi, [rip + pl_preset_cur]
+        inc     edi                     # -1 -> 0
+        cmp     edi, NPRESETS
+        jb      62f
+        xor     edi, edi
+62:     lea     rsi, [rip + s_r_next]
+        call    switch_to
+        jmp     8f
+7:      cmp     ebx, SDLK_LEFT
+        je      71f
+        cmp     ebx, '<'
+        jne     72f
+71:     mov     edi, [rip + pl_preset_cur]
+        dec     edi
+        jns     711f
+        mov     edi, NPRESETS - 1
+711:    lea     rsi, [rip + s_r_prev]
+        call    switch_to
+        jmp     8f
+72:     cmp     ebx, 'c'                # auto-cycle on/off (needs an interval > 0)
+        jne     73f
+        vxorpd  xmm0, xmm0, xmm0
+        vucomisd xmm0, [rip + opt_interval]
+        jae     8f
+        xor     dword ptr [rip + cycle_on], 1
+        call    clock_now
+        vmovsd  [rip + cbuf], xmm0      # scratch
+        vaddsd  xmm0, xmm0, [rip + opt_interval]
+        vmovsd  [rip + deadline], xmm0
+        cmp     dword ptr [rip + opt_log], 0
+        je      8f
+        lea     rdi, [rip + s_cycle_log]
+        vmovsd  xmm0, [rip + cbuf]
+        lea     rsi, [rip + s_off]
+        lea     rax, [rip + s_on]
+        cmp     dword ptr [rip + cycle_on], 0
+        cmovne  rsi, rax
+        mov     eax, 1
+        call    printf@PLT
+        jmp     8f
+73:     lea     eax, [ebx - '1']        # 1-9: type count
         cmp     eax, 8
         ja      8f
         inc     eax
         mov     [rip + opt_k], eax
         mov     [rip + pl + PL_K], eax
-        call    pl_random_rules
+        mov     edi, [rip + pl_preset_cur]
+        test    edi, edi
+        js      74f
+        lea     rsi, [rip + s_r_types]
+        call    switch_to
+        jmp     8f
+74:     call    pl_random_rules
         call    pl_random_particles
 8:      xor     eax, eax
 9:      pop     rbx
@@ -446,7 +729,8 @@ window:
         push    r13
         push    r14
         push    r15
-        sub     rsp, 48                 # rsp aligned; [rsp] t_title, [rsp+8] step_time, [rsp+16] frames, [rsp+24] steps
+        sub     rsp, 64                 # rsp aligned; [rsp] t_title, [rsp+8] step_time, [rsp+16] frames, [rsp+24] steps
+                                        # [rsp+32] t_step, [rsp+40] last clock, [rsp+48] fps, [rsp+56] ms/step
         mov     edi, SDL_INIT_VIDEO
         call    SDL_Init@PLT
         test    eax, eax
@@ -492,6 +776,10 @@ window:
         vmovsd  [rsp + 8], xmm0
         mov     qword ptr [rsp + 16], 0
         mov     qword ptr [rsp + 24], 0
+        call    clock_now
+        vmovsd  [rsp + 40], xmm0
+        vaddsd  xmm0, xmm0, [rip + opt_interval]
+        vmovsd  [rip + deadline], xmm0  # the first preset gets a full interval
 
 .Lframe:
         # events
@@ -512,8 +800,16 @@ window:
         jmp     .Lpoll
 
 .Lsim:
+        # auto-cycle; a pause holds the countdown
+        call    clock_now
+        vsubsd  xmm1, xmm0, [rsp + 40]
+        vmovsd  [rsp + 40], xmm0
         cmp     dword ptr [rip + paused], 0
-        jne     .Ldraw
+        je      0f
+        vaddsd  xmm1, xmm1, [rip + deadline]
+        vmovsd  [rip + deadline], xmm1
+        jmp     .Ldraw
+0:      call    cycle_tick
         call    now
         vmovsd  [rsp + 32], xmm0
         mov     ebx, [rip + opt_spf]
@@ -567,23 +863,37 @@ window:
 3:      mov     qword ptr [rsp + 16], 0
         mov     qword ptr [rsp + 24], 0
         mov     qword ptr [rsp + 8], 0
+        vmovsd  [rsp + 48], xmm0
+        vmovsd  [rsp + 56], xmm1
+        call    cycle_text
         call    simd_name
         mov     r12, rax
         lea     rax, [rip + s_empty]
         lea     r13, [rip + s_paused]
         cmp     dword ptr [rip + paused], 0
         cmove   r13, rax
+        call    preset_name
+        mov     rcx, rax
+        mov     r8d, [rip + pl_preset_cur]
+        inc     r8d
         lea     rdi, [rip + title]
         mov     esi, 256
         lea     rdx, [rip + s_title]
-        mov     ecx, [rip + pl + PL_N]
-        mov     r8d, [rip + pl + PL_K]
-        mov     r9d, [rip + pl + PL_NTHREADS]
+        lea     r9, [rip + cbuf]
+        push    rax                     # pad
         push    r13
         push    r12
+        mov     eax, [rip + pl + PL_NTHREADS]
+        push    rax
+        mov     eax, [rip + pl + PL_K]
+        push    rax
+        mov     eax, [rip + pl + PL_N]
+        push    rax
+        vmovsd  xmm0, [rsp + 48 + 48]
+        vmovsd  xmm1, [rsp + 56 + 48]
         mov     eax, 2
         call    snprintf@PLT
-        add     rsp, 16
+        add     rsp, 48
         mov     rdi, [rip + win]
         lea     rsi, [rip + title]
         call    SDL_SetWindowTitle@PLT
@@ -598,7 +908,7 @@ window:
         call    SDL_DestroyWindow@PLT
         call    SDL_Quit@PLT
         xor     eax, eax
-        add     rsp, 48
+        add     rsp, 64
         pop     r15
         pop     r14
         pop     r13
@@ -611,6 +921,50 @@ window:
 main:
         push    rbx                     # rsp aligned
         call    parse_args
+
+        # --list-presets
+        cmp     dword ptr [rip + opt_list], 0
+        je      12f
+        xor     ebx, ebx
+11:     lea     rdi, [rip + s_listfmt]
+        mov     esi, ebx
+        lea     rax, [rip + pl_preset_names]
+        mov     rdx, [rax + rbx*8]
+        xor     eax, eax
+        call    printf@PLT
+        inc     ebx
+        cmp     ebx, NPRESETS
+        jb      11b
+        xor     edi, edi
+        call    exit@PLT
+
+        # --preset NAME
+12:     mov     rdi, [rip + opt_preset]
+        test    rdi, rdi
+        jz      14f
+        call    pl_preset_find
+        mov     [rip + start_preset], eax
+        test    eax, eax
+        jns     14f
+        mov     rdi, [rip + stderr]
+        lea     rsi, [rip + s_badpreset]
+        mov     rdx, [rip + opt_preset]
+        xor     eax, eax
+        call    fprintf@PLT
+        mov     edi, 2
+        call    exit@PLT
+
+        # auto-cycle unless --no-cycle or --interval 0; headless logs switches
+14:     vxorpd  xmm0, xmm0, xmm0
+        vucomisd xmm0, [rip + opt_interval]
+        jae     15f
+        cmp     dword ptr [rip + opt_nocycle], 0
+        jne     15f
+        mov     dword ptr [rip + cycle_on], 1
+15:     cmp     dword ptr [rip + opt_headless], 0
+        je      16f
+        mov     dword ptr [rip + opt_log], 1
+16:
 
         # validate
         mov     eax, [rip + opt_n]
@@ -673,6 +1027,7 @@ main:
         jnz     5f
         mov     edi, 1
         mov     eax, [rip + opt_bench]
+        or      eax, [rip + opt_headless]
         or      rax, [rip + opt_dump]
         jnz     5f
         mov     edi, SC_NPROCESSORS_ONLN
@@ -706,6 +1061,10 @@ main:
         je      7f
         call    dump_frame
         jmp     9f
-7:      call    window
+7:      cmp     dword ptr [rip + opt_headless], 0
+        je      8f
+        call    headless
+        jmp     9f
+8:      call    window
 9:      mov     edi, eax
         call    exit@PLT

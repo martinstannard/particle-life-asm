@@ -3,7 +3,7 @@ CC        = gcc
 CFLAGS    = -O3 -march=native -Wall -Wextra -g
 BUILD     = build
 
-CORE_OBJ  = $(BUILD)/sim.o $(BUILD)/threads.o
+CORE_OBJ  = $(BUILD)/sim.o $(BUILD)/threads.o $(BUILD)/presets.o
 APP_OBJ   = $(BUILD)/main.o $(BUILD)/render.o $(CORE_OBJ)
 
 ARGS     ?=
@@ -22,7 +22,7 @@ $(BUILD)/%.o: src/%.S src/layout.inc | $(BUILD)
 	$(CC) -c $(AS_FLAGS) -Isrc -o $@ $<
 
 $(BUILD)/particle_life: $(APP_OBJ)
-	$(CC) -o $@ $^ -lSDL2 -lpthread
+	$(CC) -o $@ $^ -lSDL2 -lpthread -lm
 
 $(BUILD)/ref.o: ref/ref.c ref/ref.h | $(BUILD)
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -38,11 +38,16 @@ $(BUILD)/ref_bench_clang: ref/ref_bench.c ref/ref.c ref/ref.h | $(BUILD)
 $(BUILD)/test_step: tests/test_step.c $(BUILD)/ref.o $(CORE_OBJ) ref/pl_state.h
 	$(CC) $(CFLAGS) -o $@ tests/test_step.c $(BUILD)/ref.o $(CORE_OBJ) -lm -lpthread
 
+$(BUILD)/test_presets: tests/test_presets.c $(BUILD)/ref.o $(CORE_OBJ) ref/pl_state.h
+	$(CC) $(CFLAGS) -o $@ tests/test_presets.c $(BUILD)/ref.o $(CORE_OBJ) -lm -lpthread
+
 run: $(BUILD)/particle_life
 	./$(BUILD)/particle_life $(ARGS)
 
-test: $(BUILD)/test_step
+test: $(BUILD)/test_step $(BUILD)/test_presets $(BUILD)/particle_life
 	./$(BUILD)/test_step
+	./$(BUILD)/test_presets tests/plbox_ref.txt
+	sh tests/test_cycle.sh ./$(BUILD)/particle_life
 
 # Headless benchmark at constant density (10k particles per 1920x1080):
 # the world grows with N so every run sees the same neighbourhood sizes.
