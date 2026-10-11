@@ -63,7 +63,7 @@ void pl_pool_set(uint32_t pool);
 uint32_t pl_types_draw(void);
 int pl_entry_find(const char *name);
 /* src/spawn.S */
-#define PL_NSPAWNS 17
+#define PL_NSPAWNS 18
 extern const char *pl_spawn_names[PL_NSPAWNS];
 extern uint64_t pl_frng;
 extern uint32_t pl_spawn_cur;

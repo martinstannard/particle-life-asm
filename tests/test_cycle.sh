@@ -59,7 +59,7 @@ awk 'NR == FNR { k[$1] = $4; next }
          sub("K=", "", $8)
          if ($7 == "curated" && "K=" $8 != k[$5]) bad = "curated K " $8 " for " $6
          if ($7 == "generated") { if ($8 + 0 < 2 || $8 + 0 > 16) bad = "generated K " $8; gk[$8] = 1 }
-         if ($10 == "ring" || $10 == "spiral" || $10 == "line_mixed" || $10 == "random") bad = "spawn " $10
+         if ($10 == "ring" || $10 == "spiral" || $10 == "line_mixed" || $10 == "random" || $10 == "star") bad = "spawn " $10
          sp[$10]++
          if ($12 == last) bad = "palette twice in a row"
          last = $12; n++

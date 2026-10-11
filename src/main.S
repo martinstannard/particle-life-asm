@@ -24,7 +24,7 @@
 .set SDLK_LEFT,             0x40000050
 .set NCURATED,              17
 .set NENTRIES,              48
-.set NSPAWNS,               17
+.set NSPAWNS,               18
 .set CLOCK_MONOTONIC,       1
 .set SC_NPROCESSORS_ONLN,   84
 .set MAX_PARTICLES,         4000000
@@ -94,6 +94,8 @@ s_kdraw:     .asciz "2..16"
 s_kfmt:      .asciz "%u"
 s_inpat:     .asciz "(in pl-box's spawn_pattern)"
 s_notpat:    .asciz ""
+s_fixpat:    .asciz "(not in pl-box; in spawn_pattern in place of star)"
+s_starpat:   .asciz "(pl-box's exact star: a 1 px dot; spawn_pattern uses star_fixed)"
 s_badpreset: .asciz "unknown preset '%s' (see --list-presets)\n"
 s_badspawn:  .asciz "unknown spawn '%s' (see --list-spawns)\n"
 s_badpal:    .asciz "unknown palette '%s' (see --list-palettes)\n"
@@ -1587,7 +1589,14 @@ list_spawns:
         je      2f
         cmp     ebx, 16                 # random
         je      2f
-        mov     rcx, rax
+        lea     rax, [rip + s_starpat]
+        cmp     ebx, 15                 # star: replaced by star_fixed
+        je      21f
+        lea     rax, [rip + s_fixpat]
+        cmp     ebx, 17
+        je      21f
+        lea     rax, [rip + s_inpat]
+21:     mov     rcx, rax
 2:      lea     rax, [rip + pl_spawn_names]
         mov     rdx, [rax + rbx*8]
         lea     rdi, [rip + s_lspfmt]

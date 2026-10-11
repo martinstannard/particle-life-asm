@@ -16,7 +16,7 @@
         .intel_syntax noprefix
         .include "layout.inc"
 
-.set NSPAWNS, 17
+.set NSPAWNS, 18
 
         .section .rodata
         .balign 16
@@ -56,8 +56,8 @@ C_2_4:    .float 2.4
 C_2_5:    .float 2.5
 
 # layout names (pl-box's bin/render.rs spelling); "random" is the old
-# uniform scatter (pl-box's random_population), "star_fixed" is not in
-# pl-box (see sp_star)
+# uniform scatter (pl-box's random_population); "star_fixed" is not in
+# pl-box: its star with the radius scaled to the star (see sp_star)
 sn00: .asciz "pie"
 sn01: .asciz "line"
 sn02: .asciz "ring"
@@ -75,22 +75,25 @@ sn13: .asciz "polar_maze"
 sn14: .asciz "heart"
 sn15: .asciz "star"
 sn16: .asciz "random"
+sn17: .asciz "star_fixed"
 
-# spawn_pattern: rng.gen_range(0..15) -> layout, soft_clusters 3 of 15
+# spawn_pattern: rng.gen_range(0..15) -> layout, soft_clusters 3 of 15.
+# Slot 11 is pl-box's star; it is mapped to star_fixed here because pl-box's
+# star is a 1 px dot of one species (see sp_star).
 pattern_map:
-        .byte 0, 1, 10, 3, 4, 6, 8, 9, 12, 13, 14, 15, 5, 5, 5
+        .byte 0, 1, 10, 3, 4, 6, 8, 9, 12, 13, 14, 17, 5, 5, 5
 
         .section .data.rel.ro, "aw"
         .balign 8
         .globl pl_spawn_names
 pl_spawn_names:
         .quad sn00, sn01, sn02, sn03, sn04, sn05, sn06, sn07, sn08
-        .quad sn09, sn10, sn11, sn12, sn13, sn14, sn15, sn16
+        .quad sn09, sn10, sn11, sn12, sn13, sn14, sn15, sn16, sn17
 spawn_fns:
         .quad sp_pie, sp_line, sp_ring, sp_rainbow_ring, sp_rainbow_rings
         .quad sp_soft_clusters, sp_radiant_fans, sp_spiral, sp_twin_spirals
         .quad sp_spiral_arms, sp_blocks, sp_line_mixed, sp_stripes
-        .quad sp_polar_maze, sp_heart, sp_star, sp_random
+        .quad sp_polar_maze, sp_heart, sp_star, sp_random, sp_star_fixed
 
         .data
         .balign 8
@@ -1040,9 +1043,14 @@ sp_heart:
 .set ST_REG, 48                 # 17 u32
 .set ST_ORDER, 120              # 16 u32
 .set ST_FRAME, 184
+sp_star_fixed:
+        ENTER   ST_FRAME
+        mov     r13d, 1
+        jmp     0f
 sp_star:
         ENTER   ST_FRAME
-        vmovss  xmm0, [rip + s_w]
+        xor     r13d, r13d
+0:      vmovss  xmm0, [rip + s_w]
         vmulss  xmm0, xmm0, [rip + C_HALF]
         vmovss  [rsp + ST_CX], xmm0
         vmovss  xmm0, [rip + s_h]
@@ -1086,7 +1094,10 @@ sp_star:
         vmulss  xmm0, xmm0, [rip + C_TAU]
         vmovss  [rsp + ST_A], xmm0
         call    fr_f32
-        vmovss  [rsp + ST_RR], xmm0
+        test    r13d, r13d
+        jz      30f
+        vmulss  xmm0, xmm0, [rsp + ST_OUTER]
+30:     vmovss  [rsp + ST_RR], xmm0
         vmovss  xmm0, [rsp + ST_A]
         vaddss  xmm0, xmm0, [rsp + ST_PIN]
         vmovss  xmm1, [rsp + ST_TAUN]
@@ -2139,7 +2150,8 @@ wrap1:
         ret
 
 # u32 pl_spawn_pick(void): pl-box's spawn_pattern choice, 0..15 weighted
-# (soft_clusters 3/15, never ring, spiral, line_mixed or random)
+# (soft_clusters 3/15, star_fixed for pl-box's star; never ring, spiral,
+# line_mixed, random or star)
         .globl pl_spawn_pick
 pl_spawn_pick:
         call    pl_rng_u64
