@@ -1,23 +1,35 @@
 # Particle Life in x86-64 assembly
 
-A Particle Life simulation whose whole program — simulation core, software
-renderer, SDL2 window loop, argument parsing, benchmark — is hand-written
-x86-64 assembly (GNU `as`, `.intel_syntax noprefix`, ~3600 lines). C appears
-only in the reference implementation and the test harnesses.
+A Particle Life simulation whose whole program is hand-written x86-64
+assembly (GNU `as`, `.intel_syntax noprefix`, ~8 600 lines): simulation
+core, spawn layouts, rule presets, palettes, software renderer with a text
+overlay, SDL2 window loop, argument parsing and benchmark. C appears only in
+the reference implementation, the test harnesses and one contact-sheet
+helper.
 
-It has the 31 rule presets of `~/code/pl-box` and switches to a new one every
-20 seconds (see [Presets and cycling](#presets-and-cycling)).
+Every 20 seconds the window shows a new **scene**:
 
-![frame after 6000 steps](docs/frame.png)
+- a **preset**: one of pl-box's 17 curated configurations (rule generator,
+  type count and tuned physics), or one of the 31 generated rule presets;
+- its **type count**: the curated preset's own, or drawn from 2..16;
+- a **spawn layout**: pl-box's starting patterns (pie, rings, spirals, soft
+  clusters, blocks, stripes, polar maze, heart, ...), chosen with pl-box's
+  weights;
+- a **palette**: one of 91 named palettes from pl-box and biome.
 
-*20 000 particles, 6 types, 1600×900, seed 1, after 6000 steps
-(`--dump-frame`, converted to PNG).*
+An overlay in the top-left corner shows FPS, step time, particle and type
+counts, preset, spawn layout, palette and the seconds to the next switch.
 
-The model and parameters follow `~/code/pl-box` (`rules.rs`,
-`simulation.rs`, render defaults): N particles of K types,
-`attraction[i][j]` ∈ [-1, 1), per-pair `min_radius` ∈ [12, 24) and
-`max_radius` ∈ [33, 70), force scale 0.3, core repulsion 0.6, friction 0.4,
-dt = 1/60, toroidal world, semi-implicit Euler:
+![spawn layouts](docs/spawns.png)
+
+*Every spawn layout at step 0 and after 300 steps (curated SkipPursuit,
+K = 7, 6000 particles, 800×450, palette neon-spectrum, seed 3;
+`tools/spawn_sheet.sh`).*
+
+The model follows `~/code/pl-box` (`rules.rs`, `simulation.rs`): N
+particles of K types, `attraction[i][j]` ∈ [-1, 1], per-pair min and max
+radius, force scale, core repulsion, friction, dt = 1/60, toroidal world,
+semi-implicit Euler:
 
 ```
 d >= maxr          : 0
@@ -26,9 +38,9 @@ minr <= d < maxr   : attraction * smoothstep(1 - (d-minr)/(maxr-minr))
 v = v*(1 - friction*dt) + F*dt ;  p = wrap(p + v*dt)
 ```
 
-pl-box's profile is the smoothstep-shaped bump, not the textbook triangle;
-it is reproduced exactly (the O(N²) test reference below is a line-by-line
-transcription of pl-box's loop).
+pl-box's profile is the smoothstep-shaped bump, not the textbook triangle.
+It is reproduced exactly: the O(N²) test reference below is a line-by-line
+transcription of pl-box's loop.
 
 ## Build and run
 
@@ -37,225 +49,435 @@ when CPUID and XGETBV report it).
 
 ```sh
 make                 # build/particle_life and build/ref_bench
-make run             # window, 20k particles, 1600x900, new preset every 20 s
-make run ARGS="--particles 50000 --types 9 --no-vsync"
-make test            # asm vs C reference vs brute force, presets vs pl-box, cycling
+make run             # window, 20k particles, 1600x900, new scene every 20 s
+make run ARGS="--interval 5 --pool all"
+make test            # spawns and presets vs pl-box, asm vs C reference, overlay, cycling
 make bench           # headless, 10k/50k/200k particles, 1 and 8 threads
 make bench-ref       # C reference, gcc -O3 -march=native
 make bench-ref-clang # C reference, clang -O3 -ffast-math -march=native
 ```
 
 ```
-particle_life [--particles N] [--types K(1-16)] [--seed S] [--width W] [--height H]
+particle_life [--particles N] [--seed S] [--width W] [--height H]
+              [--types K]              pin the type count (1-16); default: per preset
+              [--pool curated|generated|all]   which presets cycle (default curated)
+              [--preset NAME]          start on this preset (case-insensitive; c:NAME /
+                                       g:NAME pick the curated / generated one)
+              [--spawn NAME]           pin the spawn layout (default: pl-box's weighted pick)
+              [--palette NAME]         pin the palette (default: a pick per switch)
+              [--interval SECONDS]     auto-cycle period, default 20, fractions allowed, 0 = off
+              [--no-cycle]             stay on the start preset
+              [--list-presets] [--list-spawns] [--list-palettes]
               [--threads T] [--simd avx2|avx512] [--cell-div 1|2]
               [--steps-per-frame S] [--no-vsync]
-              [--bench STEPS [--warmup STEPS]]          headless benchmark
-              [--dump-frame out.ppm [--steps STEPS]]    headless, writes one frame
+              [--bench STEPS [--warmup STEPS]]          headless step benchmark
+              [--bench-render FRAMES]                   renderer and overlay timing
+              [--dump-frame out.ppm [--steps STEPS] [--overlay]]   headless, one frame
+              [--headless FRAMES [--fake-clock DT]]     window frame loop without a window
+              [--log-switches]                          print a line per switch
               [--keys STR]                              feed key presses to the key handler first
-                                                        ('>' / '<' stand for Right / Left)
-              [--preset NAME]                           start on this preset (case-insensitive)
-              [--interval SECONDS]                      auto-cycle period, default 20, 0 = off
-              [--no-cycle]                              stay on the preset
-              [--list-presets]                          print the 31 preset names
-              [--headless FRAMES [--fake-clock DT]]     window frame loop without a window, logs switches
-              [--log-switches]                          print a line per preset switch
 ```
 
-Keys: Space pause, Right/Left next/previous preset (in list order, wrapping),
-C auto-cycle on/off, R re-roll the current preset (same preset, next random
-numbers: new radii and positions), N new positions, `+`/`-` particle count
-×5/4 and ×4/5 (respawns), 1–9 type count (re-applies the current preset),
-Esc quit. The title shows the preset, its number, the seconds to the next
-switch (or "auto-cycle off"), particles, types, fps, ms per step, threads
-and SIMD path, e.g.
+| key | action |
+|---|---|
+| Right / Left | next / previous preset of the pool (wrapping) |
+| P | next pool (curated → generated → all), and a preset from it |
+| R | re-roll: same preset and type count, new matrix draws, spawn and palette |
+| S / Shift+S | next / previous spawn layout, applied at once (respawn) |
+| N | respawn in the current layout |
+| K | next palette that qualifies for the current type count |
+| `[` / `]` | one type fewer / more (re-applies the preset, same spawn layout) |
+| 1–9 | that many types |
+| `+` / `-` | particle count ×5/4 / ×4/5 (respawn, same layout) |
+| C | auto-cycle on/off |
+| F | overlay on/off (default on) |
+| Space | pause (also holds the countdown) |
+| Esc | quit |
+
+`[`, `]`, 1–9 and S change the current scene only: the next automatic
+switch picks the preset's own type count and a spawn layout again, unless
+`--types` / `--spawn` pin them. In `--keys`, `>`/`<` stand for Right/Left
+and `S` for Shift+S.
+
+The window title carries the same information as the overlay, e.g.
 
 ```
-Particle Life (asm) | Bipartite (8/31) | next in 3 s | 20000 particles, 6 types | 120 fps | step 0.39 ms | 8 threads avx512
+Particle Life (asm) | VortexLattice (curated 6/17) | next in 3 s | 20000 particles, 8 types | 120 fps | step 0.70 ms | spawn soft_clusters | palette primary-plus
 ```
 
-The window and `--headless` always run a preset (`--preset`, otherwise a
-random one). `--bench` and `--dump-frame` use the old plain random rules
-unless `--preset` is given, so benchmark numbers stay comparable. Without
-`--seed` the window seeds from the clock (a different preset order each
-run). Everything else uses seed 1. The world is the window size, drawn 1:1. The window uses half the
-logical CPUs by default; bench and dump use 1 thread unless `--threads` is
+Without `--seed` the window seeds from the clock, so each run starts on a
+different scene. `--bench` (and `--dump-frame` without `--preset`) use
+plain random rules with a uniform scatter as before, so benchmark numbers
+stay comparable. The world is the window size, drawn 1:1. The window uses
+half the logical CPUs; bench and dump use 1 thread unless `--threads` is
 given.
 
-## Presets and cycling
+## Scenes
 
-![all 31 presets](docs/presets.png)
+![presets with spawn layouts](docs/presets.png)
 
-*Every preset after 1200 steps (20 s at 60 steps/s): 5000 particles, 8
-types, 960×540, seed 1, 2×2-pixel dots, thumbnails brightened
+*The 17 curated presets as the window shows them (own type count, spawn
+layout from pl-box's weighted chooser, palette pick, whatever seed
+`idx + 1` gives), then generated presets at K = 3, 5, 12, 16, 4, 10, 14
+with chosen palettes; 600 steps each, 6000 particles, 800×450
 (`tools/contact_sheet.sh`).*
 
-### The presets
+### Presets
 
-The 31 `RulePreset` generators from pl-box `crates/pl-core/src/rules.rs`,
-in pl-box's order and with its display names (`--preset` also accepts the
-enum names, e.g. `RockPaperScissors`, `HelicalLadder`):
+`src/presets.S` numbers 48 entries. 0–16 are pl-box's `CURATED` list
+(`crates/pl-core/src/presets.rs`) in its order. 17–47 are the 31
+`RulePreset` generators of `rules.rs`:
 
-| # | name | # | name | # | name | # | name |
-|--:|---|--:|---|--:|---|--:|---|
-| 0 | Random | 8 | Hub&Spokes | 16 | Wavefield | 24 | SkipPursuit |
-| 1 | Symmetric | 9 | Shells | 17 | ChiralBand | 25 | BlueNoise |
-| 2 | Snake | 10 | Swirl | 18 | RotConveyor | 26 | Phasefield |
-| 3 | Chains1 | 11 | Checker | 19 | PrimeHop | 27 | RingRoad |
-| 4 | Chains2 | 12 | Dimers | 20 | ParityVortex | 28 | TriSpiral |
-| 5 | Chains3 | 13 | TriadFlocks | 21 | Helical | 29 | VortexLattice |
-| 6 | RPS | 14 | Conveyor | 22 | BiasedWave | 30 | DriftPatch |
-| 7 | Bipartite | 15 | Patchwork | 23 | ModTriads | | |
+| family | curated presets | K | force | friction | core | min r | max r |
+|---|---|--:|--:|--:|--:|---|---|
+| `cfg` | SkipPursuit, Conveyor, Shells, Hub&Spokes | 7 | 1.1 | 0.6 | 0.7 | 12–22 | 28–45 |
+| `cfg` | ParityVortex, Random, Dimers, Bipartite | 8 | 1.1 | 0.6 | 0.7 | 12–22 | 28–45 |
+| `cfg` | TriadFlocks | 9 | 1.1 | 0.6 | 0.7 | 12–22 | 28–45 |
+| `cfg_fric` | VortexLattice / DriftPatch | 8 | 1.1 | 0.4 / 0.5 | 0.7 | 12–22 | 28–45 |
+| `flow` | Swirl, ChiralBand, Wavefield, Phasefield, TriSpiral, ModTriads | 8 | 1.4 | 0.35 | 0.9 | 12–20 | 28–45 |
 
-**All of it is hand-written asm (`src/presets.S`). Nothing is generated at
-build time.** Every pl-box generator is pointwise: `attraction[i][j]`
-depends only on i, j and K. So one driver loops over (i, j) for the current
-K (1–16) and calls a per-preset cell function. Symmetric reads back the
-mirrored entry it already wrote; Random and Symmetric draw from the
-program's RNG in pl-box's order. Sines, cosines and exponentials call libm
-`sinf`/`cosf`/`expf`/`fmodf`. Those are the functions Rust's `f32::sin`,
-`cos`, `exp` and `%` call on Linux. The arithmetic follows the Rust
-expression order with no FMA contraction (Rust does not contract either),
-and pl-box's quirks are kept: Patchwork's `sin(h as f32)` hash, the two
-xorshift hashes, PrimeHop's prime that is always 2, and DriftPatch's
-`base * 0.0` that leaves −0.0. The result is **bit-identical to pl-box for
-all 29 deterministic presets and every K from 1 to 16** (test below).
+The generated entries keep the per-rule physics of the previous round: the
+17 rules that pl-box curates use their curated physics, the other 14 use
+pl-box's `render.rs` defaults (force 0.3, friction 0.4, core 0.6, min r
+12–24, max r 33–70). Their type count is drawn uniformly from 2..16 at each
+switch. `--list-presets` prints all 48 with type count and physics.
 
-pl-box's own Helical (up to ±1.1) and SkipPursuit (down to −1.335, from a
-negative `%` in its `circ` helper) leave [-1, 1]. The raw generator output
-matches pl-box exactly. When installed, every value is clamped to
-[-1, 1], the range pl-box's own `jitter_attraction` clamps to.
+The rule generators are the ones of the previous round, bit-identical to
+pl-box's `RuleMatrix::from_preset` for all 29 deterministic generators and
+K = 1..16 (`tests/plbox_ref.txt`). pl-box's Helical and SkipPursuit leave
+[-1, 1]; installed values are clamped, as pl-box's own `jitter_attraction`
+clamps.
 
-**Radii and physics per preset.** As in `RuleMatrix::from_preset`, each
-pair gets a random min radius and max radius from the preset's ranges (max
-= min + 1 if they collide, which these ranges never do). The ranges and
-force scale / friction / core repulsion come from pl-box's curated list
-(`presets.rs`, `CURATED`) for the 17 presets in it. The other 14 use the
-defaults of pl-box's `render.rs` preview tool, which were already this
-program's defaults:
+**Pools.** `--pool` (and P) chooses which entries the timer cycles through:
+`curated` (default, the tuned ones), `generated` or `all`. The next preset
+comes from a shuffle bag over the pool: uniformly among the entries not yet
+shown in this round, never the current one. When the pool is exhausted, a
+new round starts with only the current entry marked.
 
-| family | presets | force | friction | core | min r | max r |
-|---|---|--:|--:|--:|---|---|
-| `cfg` | Random, Bipartite, Hub&Spokes, Shells, Dimers, TriadFlocks, Conveyor, ParityVortex, SkipPursuit | 1.1 | 0.6 | 0.7 | 12–22 | 28–45 |
-| `cfg_fric` | VortexLattice / DriftPatch | 1.1 | 0.4 / 0.5 | 0.7 | 12–22 | 28–45 |
-| `flow` | Swirl, Wavefield, ChiralBand, ModTriads, Phasefield, TriSpiral | 1.4 | 0.35 | 0.9 | 12–20 | 28–45 |
-| not curated | Symmetric, Snake, Chains1–3, RPS, Checker, Patchwork, RotConveyor, PrimeHop, Helical, BiasedWave, BlueNoise, RingRoad | 0.3 | 0.4 | 0.6 | 12–24 | 33–70 |
+### Type counts
 
-The particle and type counts stay as set (pl-box's curated list fixes 7–9
-types; here K stays whatever `--types` or 1–9 chose).
+A curated preset brings its own K (7, 8 or 9). A generated preset draws K
+from 2..16. `--types K` pins K for every switch. `[`, `]` and 1–9 re-apply
+the current preset with another K and respawn it in the same layout.
 
-### What a switch replaces
+Everything derived from K is rebuilt on every change: the K×K matrix and
+radii (entries outside K×K zeroed), the kernel tables, max radius, grid and
+neighbour ranges, the force kernel (AVX2 K≤8, AVX2 K≤16, or AVX-512), the
+spawn's type assignment and the palette's K colours. Nothing breaks above
+9: the kernels have supported 16 types from the start, and the scene test
+below runs every K from 2 to 16 against the C reference on both AVX2
+kernels and AVX-512.
 
-Every switch (timer, Right/Left, R, 1–9, `--keys`, start-up) goes through
-one path, `pl_preset_apply`:
+### Spawn layouts
 
-1. physics: force scale, friction, core repulsion of the new preset;
-2. the whole 16×16 attraction, min-radius and max-radius tables (entries
-   outside K×K are zeroed);
-3. `pl_update_tables`, the same routine the program has always used to set
-   up rules: the kernel tables (b0, ir, c1, as), core·scale/2 and the damping
-   factor, the global max radius, cell size and grid dimensions, the cell
-   arrays (reallocated if the grid grows), the per-cell neighbour-range
-   table and the kernel choice. Thread work partitions (cell chunk size,
-   per-thread histograms) are derived from the cell count at the start of
-   every multi-threaded step, so they follow the new grid automatically;
-4. a fresh uniform scatter of all N particles (zero velocity, new random
-   types) and a bin into the new grid.
+`src/spawn.S` ports pl-box's spawn functions from
+`crates/pl-core/src/simulation.rs` (`--list-spawns`):
 
-Switches happen on the main thread between steps, while the workers wait
-on the step barrier. `--log-switches` (on by default in `--headless`)
-prints what was installed:
+| # | layout | in pl-box's `spawn_pattern` | # | layout | in pl-box's `spawn_pattern` |
+|--:|---|---|--:|---|---|
+| 0 | pie | 1/15 | 9 | spiral_arms | 1/15 |
+| 1 | line | 1/15 | 10 | blocks | 1/15 |
+| 2 | ring | – | 11 | line_mixed | – |
+| 3 | rainbow_ring | 1/15 | 12 | stripes | 1/15 |
+| 4 | rainbow_rings | 1/15 | 13 | polar_maze | 1/15 |
+| 5 | soft_clusters | 3/15 | 14 | heart | 1/15 |
+| 6 | radiant_fans | 1/15 | 15 | star | 1/15 in pl-box, see below |
+| 7 | spiral | – | 16 | random | – (uniform scatter) |
+| 8 | twin_spirals | 1/15 | 17 | star_fixed | the star slot here |
+
+pl-box draws its spawns from `fastrand`'s global generator (wyrand). The
+same generator is implemented in asm (`fastrand::f32`,
+`fastrand::usize(0..n)` with its rejection step, `fastrand::bool`), the
+trigonometry calls libm like Rust's `f32::sin`/`cos`/`atan2`/`powf`, and
+the arithmetic follows the Rust expressions one operation at a time with no
+FMA. So **with the same seed every layout is bit-identical to pl-box**:
+same positions, same types, same order (test below). Each layout always
+produces exactly N particles. They are then wrapped into the world, as
+pl-box's Wrap boundary does on its first step. Soft clusters can reach a
+little past the edges.
+
+Where this port differs from pl-box, on purpose:
+
+- **star_fixed.** pl-box's `spawn_star` samples the radius as
+  `rr = fastrand::f32()`, 0 to 1 pixel, never scaled by `outer`. Every
+  particle lands within 1 px of the centre, inside `core_r`, so all get the
+  core species. The result is a single-colour dot that core repulsion blows
+  apart into gas. It was 3 of the 24 tiles in the first preset contact
+  sheet, all broken. `star` is ported exactly (bit-identical, reachable with
+  `--spawn star` or S). The weighted chooser uses `star_fixed` instead,
+  which scales `rr` by `outer`: a star with one species per point and the
+  core. To restore pl-box's exact weights, change one byte in
+  `pattern_map` (`src/spawn.S`).
+- **radiant_fans with K < 3.** pl-box makes `clamp(K, 3, 10)` fans and skips
+  the ones without a colour, returning only 1334 of 2000 particles for
+  K = 2 (seen in pl-box's own output). Here such a fan borrows fan
+  `f % K`'s colours, so the count is always N. For K ≥ 3 nothing changes.
+- The chooser's draw (pl-box: `rand`'s `SmallRng.gen_range(0..15)`) and
+  `random` (pl-box: `random_population` with `SmallRng`) use this program's
+  splitmix64 stream, so those draws are the same distribution as pl-box's
+  but not the same numbers.
+
+### Palettes
+
+91 named palettes (`--list-palettes`): the 42 of pl-box `color.rs`
+(neon-spectrum, rainbow-bold, solar-fire, ..., classic-10-colour) and the 50
+of biome `palettes.js` (default, twilight, earth-tones, ..., blue-tints).
+Duplicates are dropped, names come from the source comments.
+`tools/gen_palettes.py` turns them into the data file
+`src/palettes_data.S`. Everything else runs in asm (`src/palettes.S`) at
+each switch:
+
+1. **Lift.** A colour darker than luma 100 (0.2126 r + 0.7152 g + 0.0722 b)
+   is scaled up with its hue kept and, if that is not enough, blended
+   toward white until its luma is 100. pl-box's and biome's dark anchors
+   (#001219, #03071e, ...) stay visible on the near-black background.
+2. **Expand to K colours.** If the palette has at least K colours, K are
+   taken spread over the list (index i·len/K). If it has fewer, K points
+   are interpolated along the list, which generates the missing in-between
+   hues. Biome's 5-colour palettes work at any K this way.
+3. **Distinguishable?** A palette *qualifies* for K when every pair of its
+   K colours is at least 60 apart in redmean colour distance (range
+   0–765). Automatic picks and the K key only use qualifying palettes, and
+   never the same one twice in a row. `--palette NAME` is honoured even
+   where the palette does not qualify.
+
+Palettes qualifying per type count:
+
+| K | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 |
+|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|
+| palettes | 85 | 66 | 56 | 51 | 34 | 23 | 17 | 17 | 14 | 13 | 12 | 10 | 9 | 6 | 7 |
+
+The single-hue ramps (fire, ocean, red-tints, ...) drop out first. Above
+12 types mostly the rainbow-like palettes are left, which is the honest
+limit of "clearly distinguishable" at 16 colours.
+
+![palettes at K = 4, 8, 16](docs/palettes.png)
+
+*Every palette as built for K = 4, 8 and 16 (`tools/palette_sheet.sh`; a
+dark line through a set means it does not qualify for that K).*
+
+pl-box assigns its palette's colours to species in a shuffled order and,
+for more species than colours, repeats them. Here the colours stay in list
+order (ramps read as ramps) and are interpolated instead of repeated.
+
+### What a switch does
+
+Every switch (timer, start, Right/Left, P, R, `[`/`]`/1–9) goes through
+`switch_to` in `src/main.S`:
+
+1. pick K (pinned, the curated K, or a draw 2..16);
+2. `pl_entry_install`: physics, the 16×16 attraction / min / max radius
+   tables for K, then `pl_update_tables`: kernel tables, damping, max
+   radius, cell size and grid, cell arrays (reallocated if the grid grows),
+   neighbour ranges, kernel choice;
+3. `pl_spawn`: the layout (pinned, kept, or pl-box's weighted pick) for N
+   particles of K types, wrapped into the world, zero velocity, binned;
+4. the palette (pinned, kept if it still qualifies, or a new pick) built
+   for K into the renderer's colour table;
+5. restart the countdown, and log if `--log-switches` / `--headless`.
+
+Thread work partitions follow the new grid automatically (they are derived
+from the cell count at the start of every multi-threaded step). Switches
+run on the main thread between steps while the workers wait on the step
+barrier.
 
 ```
-    2.000 s  timer  ->  2 Snake            0.03 ms  K=5 maxr 67.6 grid 23x17 force 0.30 fric 0.40 core 0.60
-    4.000 s  timer  -> 30 DriftPatch       0.09 ms  K=5 maxr 44.1 grid 36x27 force 1.10 fric 0.50 core 0.70
-    6.000 s  timer  -> 26 Phasefield       0.04 ms  K=5 maxr 44.6 grid 35x26 force 1.40 fric 0.35 core 0.90
+$ particle_life --pool all --seed 21 --interval 1 --fake-clock 0.5 --headless 8
+    0.000 s  start  ->  1 Conveyor      curated   K=7  spawn radiant_fans  palette rainbow-bold             1.23 ms  maxr 44.8 grid 71x40 force 1.10 fric 0.60 core 0.70
+    1.000 s  timer  -> 46 VortexLattice generated K=8  spawn star_fixed    palette candy-neon               1.08 ms  maxr 44.6 grid 71x40 force 1.10 fric 0.40 core 0.70
+    2.000 s  timer  -> 28 Checker       generated K=7  spawn soft_clusters palette fresh-mint               0.73 ms  maxr 69.8 grid 45x25 force 0.30 fric 0.40 core 0.60
+    3.000 s  timer  -> 16 Bipartite     curated   K=8  spawn spiral_arms   palette aurora                   0.56 ms  maxr 44.7 grid 71x40 force 1.10 fric 0.60 core 0.70
+    4.000 s  timer  ->  7 Random        curated   K=8  spawn blocks        palette miami-vapor              0.48 ms  maxr 44.9 grid 71x40 force 1.10 fric 0.60 core 0.70
 ```
-
-The window has no rules readout beyond the title, which names the active
-preset (above).
 
 ### Cycling
 
-- The timer is `CLOCK_MONOTONIC` (`clock_gettime`), not frames: the
-  next switch is due `--interval` seconds (default 20, fractional allowed,
-  0 = off) after the last one. Any manual switch restarts the countdown, and
-  the countdown is held while paused. The first preset gets a full interval
-  counted from when the window loop starts.
-- The next preset is drawn from a shuffle bag: uniformly among the presets
-  not yet shown in this round, never the current one. When all 31 have
-  been shown, a new round starts with only the current preset marked.
-  Presets reached with Right/Left also count as shown.
-- `--preset NAME` starts there and still cycles. `--no-cycle` (or
-  `--interval 0`) stays on it. C toggles cycling at runtime.
+- The timer is `CLOCK_MONOTONIC`, not frames. The next switch is due
+  `--interval` seconds after the last one. Any manual preset switch
+  restarts the countdown, and a pause holds it.
+- `--preset NAME` starts there and still cycles. `--no-cycle` or
+  `--interval 0` stays on it. C toggles cycling.
 - `--headless FRAMES` runs the window's frame loop (steps, then the cycle
   check) without SDL. `--fake-clock DT` advances the clock DT seconds per
-  frame instead of reading the real clock, for deterministic tests.
+  frame, for deterministic tests.
 
-### What the presets look like
+### Overlay
 
-Seen in the contact sheet above (one still frame each, so motion does not
-show). To tell a gas from a frozen or collapsed state I also measured mean
-speed and the coefficient of variation (CV) of particle counts on a 24 px
-grid after 1200 steps. Pure noise gives CV ≈ 0.43; clumps give more.
+The renderer draws the overlay into the pixel buffer after the particles
+(`pl_draw_text` in `src/render.S`). The font is a hand-drawn 8×8 bitmap
+table for printable ASCII (5×7 glyphs, `src/font.S`, one `.byte 0b...` per
+row with the glyph drawn in the comment). Each text pixel is a
+scale×scale block, with scale = max(1, height/450), so 2 at 900 px. A
+black drop shadow is drawn first, offset by one block, so the text reads
+on any background. The lines:
 
-- **Clear, distinct structure:** Bipartite (round single-colour blobs,
-  CV 1.53), PrimeHop (the same kind of blobs, CV 1.57: with pl-box's prime
-  always 2 it attracts even type distances, a parity rule much like
-  Bipartite), Hub&Spokes (hollow rings), Shells (small mixed clusters),
-  Checker (rings and curved chains, 1.30), Chains1 and Chains2 (short
-  worms, 1.32 / 1.00), Dimers and TriadFlocks (dense lattices of small
-  clusters), RingRoad and RotConveyor (filaments and streams), Patchwork
-  (sparse clumps on gas).
-- **Look alike:** Bipartite ≈ PrimeHop; Dimers ≈ TriadFlocks; Random,
-  Symmetric, Snake and Chains3 all give loose small clusters (CV
-  0.75–0.88).
-- **Look like gas in a still frame:** RPS, Helical, BlueNoise and
-  DriftPatch are a near-uniform, slow gas (CV 0.36–0.42, about 1–2 px/s).
-  The `flow` presets Swirl, Wavefield, ModTriads, Phasefield and TriSpiral,
-  and also ChiralBand and VortexLattice, move 4–5 times faster (4–8 px/s)
-  but only clump slightly (CV 0.45–0.54). Conveyor, ParityVortex,
-  SkipPursuit and BiasedWave show faint stripes and arcs (CV 0.49–0.63).
-  None collapses into one blob and none freezes. More steps (6000) or 4×
-  the density did not change this. pl-box's own comment in `presets.rs`
-  explains it: uniform-random starts "tend to leave directional rules as
-  diffuse dust", which is why pl-box spawns its presets from patterns
-  (rings, spirals, clusters). Those spawn patterns are not ported (see
-  below).
+```
+FPS 59.9   step 0.70 ms x2          (fps of presented frames over the last ~0.5 s; ms per step; steps per frame)
+20000 particles   8 types   8 threads avx512
+preset VortexLattice (curated 6/17)   pool curated
+spawn soft_clusters
+palette primary-plus
+next in 12 s                        (or "auto-cycle off"; "PAUSED" when paused)
+```
+
+F toggles it (default on). `--dump-frame out.ppm --overlay` burns it into
+the dumped frame (the FPS reads "-" there, step ms is the dump's average),
+so it can be checked without a display:
+
+![frame with overlay](docs/frame_overlay.png)
+
+Cost (`--bench-render 1000`, 1600×900, 20 000 particles, 1 thread): the
+overlay alone, text built with `snprintf` plus drawn, takes **0.05 ms per
+frame**, 0.3% of a 60 fps frame. Rendering without it takes 0.5–0.6 ms per
+frame. The whole-frame difference (on vs off) is below run-to-run noise. In
+the real window (`--no-vsync`, same seed, read through niri) it was
+395–436 fps with the overlay and 360–421 fps without, step 0.70–0.76 ms
+both ways.
+
+### What the scenes look like
+
+Judged from the two contact sheets above (still frames, so motion does not
+show):
+
+- **Spawn layouts** (top sheet): every layout has its pl-box shape at step
+  0, and after 300 steps of SkipPursuit the structure is still clearly
+  shaped by the start: wedges, bands, rings, clusters, blocks, stripes,
+  arms. Three stay or turn shapeless. `ring`, `line_mixed` and `random`
+  start mixed and give a uniform texture; pl-box's chooser does not use
+  them either. pl-box's exact `star` is a one-colour dot that explodes into
+  gas (hence `star_fixed`).
+- **Curated presets with spawns** (presets sheet): clear, distinct structure
+  for SkipPursuit (pie wedges with fronts), Conveyor, ParityVortex (rings of
+  segments), Shells (small rings), Hub&Spokes, VortexLattice, Random,
+  TriadFlocks (cell lattice in stripes), Dimers, Bipartite, and the
+  generated RPS, Snake, Chains2, RingRoad, BiasedWave and PrimeHop. The
+  flow family (Swirl, ChiralBand, Wavefield, Phasefield, TriSpiral) makes
+  moving filaments, folds and fronts, but in a still frame they are
+  textured clouds rather than objects. That is the closest to "gas" among
+  the curated ones.
+- **Still gas-like:** ModTriads (curated, from twin_spirals) is diffuse in
+  this frame, and the generated TriSpiral at K = 4 (pie start, render
+  physics) spreads into a smooth haze. DriftPatch from stripes keeps
+  horizontal bands but little else.
+- **Collapse:** none collapses into one blob. The smallest structures are
+  the dense cells of Snake, Shells and Chains2.
+
+Compared with the previous round, where every switch was a uniform scatter
+and about a third of the presets looked like gas, the directional presets
+now start from structure, as pl-box intends. pl-box does not pair presets
+with particular spawns (`apply_preset` and the auto-restart always call
+`spawn_pattern`), so neither does this port.
 
 ### Cost of a switch
 
-200 000 particles, 8587×4830, K = 16 for the rule build:
+200 000 particles, 8587×4830, pool `all`, 61 switches through
+`--headless` (logged ms = rules + tables + grid + spawn + bin + palette).
+The machine was loaded by other sessions during this run (load average
+~35), so these are upper bounds:
 
-| part | time |
-|---|--:|
-| matrix + radii + all derived tables + grid (`pl_preset_rules`) | 0.57 ms mean, 5.9 ms max (grid grows, cell arrays reallocated) |
-| re-scatter + bin of 200 000 particles | 4.1 ms |
-| whole switch as logged (`--keys '>>>>>>>>>>'`, 1 and 8 threads) | 4–16 ms |
+| spawn layout | switches | mean ms |
+|---|--:|--:|
+| blocks, stripes, twin_spirals | 14 | 6.6–6.9 |
+| rainbow_rings, spiral_arms, polar_maze | 11 | 7.8–9.1 |
+| line, radiant_fans, soft_clusters | 16 | 10.2–11.0 |
+| heart, star_fixed, rainbow_ring | 16 | 14.0–17.3 |
+| pie (rejection + atan2 per particle) | 4 | 28.4 |
+| **all** | **61** | **12.0** |
 
-The switch is serial (RNG scatter, serial bin), so threads do not change
-it. One switch every 20 s costs nothing measurable; at 60 fps it is at most
-one late frame.
+The rule part (matrix, radii, tables, grid) is ~0.5 ms. The rest is the
+spawn (one thread: wyrand plus libm per particle, matching pl-box) and the
+serial bin. At one switch per 20 s it is at most one late frame.
+
+## The real window and the `--interval` report
+
+**What was reported:** `--interval 3` in the real window still showed a
+20-second countdown.
+
+**Reproduced, and the cause.** With
+`NIRI_SOCKET=... niri msg windows | grep "Particle Life"`, the title I read
+went "next in 14 s, 13 s, ..., 6 s" while the program had been started with
+`--interval 3`. Its own switch log (`--log-switches`) showed timer switches
+3.0 s apart at the same time:
+
+```
+869069.732 s  start  -> 20 ParityVortex ...
+869072.877 s  timer  -> 23 ModTriads ...
+869075.886 s  timer  -> 24 SkipPursuit ...
+869078.894 s  timer  ->  8 Hub&Spokes ...
+```
+
+`niri msg windows` listed **two** "Particle Life (asm)" windows. The second
+was an older `particle_life` that was already running (started separately,
+default 20 s interval, a different PID). `grep` returned that window's title
+first. Polling each window separately showed the new one switching every 3
+seconds and the old one counting down from 20. Under gdb the deadline also
+advanced by exactly 3.0 s per switch. So `--interval` is not ignored in
+window mode: the title came from another window. No code change was needed
+for it.
+
+To make the check unambiguous, `tools/window_titles.sh SECONDS [options]`
+starts the window and reads only the window id that did not exist before
+the launch, once a second. With `--interval 5` (no seed, so the clock seed
+picks the start):
+
+```
+$ tools/window_titles.sh 32 --interval 5
+  2.2 s  window 167  ... | ModTriads (curated 14/17) | next in 4 s | 20000 particles, 8 types | ... | spawn rainbow_ring | palette neon-spectrum
+  6.7 s  window 167  ... | ModTriads (curated 14/17) | next in 0 s | ...
+  7.9 s  window 167  ... | DriftPatch (curated 7/17) | next in 4 s | 20000 particles, 8 types | ... | spawn pie | palette neon-multi
+ 12.3 s  window 167  ... | Random (curated 8/17) | next in 4 s | 20000 particles, 8 types | ... | spawn polar_maze | palette neon-spectrum
+ 18.0 s  window 167  ... | VortexLattice (curated 6/17) | next in 3 s | 20000 particles, 8 types | ... | spawn soft_clusters | palette primary-plus
+ 23.8 s  window 167  ... | ChiralBand (curated 10/17) | next in 4 s | 20000 particles, 8 types | ... | spawn line | palette rainbow-bold-2
+ 28.2 s  window 167  ... | Swirl (curated 9/17) | next in 4 s | 20000 particles, 8 types | ... | spawn soft_clusters | palette classic-rainbow
+```
+
+Six scenes in 32 s: a new preset, spawn layout and palette every ~5.4 s.
+That is 5 s plus the frame length: the machine had a load average of 40–60
+from other sessions during this run, and the window ran at 1–3 fps with
+20–30 ms steps. With lower load (~20) it runs at 400+ fps without vsync.
+
+**Why it always looked "random" before.** There were no spawn layouts:
+every start and every switch scattered the particles uniformly
+(`pl_random_particles`). The start preset was a shuffle-bag pick from all
+31 generated presets, 14 of which used pl-box's weak preview physics. Most
+of those, and the directional ones too, stay diffuse from a uniform start
+(pl-box's own comment says so). Now the window starts in the curated pool
+and every switch, including the first, takes a layout from pl-box's
+`spawn_pattern` weights, which never chooses the uniform scatter (or ring,
+spiral, line_mixed). The first title of the run above was ModTriads with
+rainbow_ring. Without `--seed`, the clock seeds the RNG, so each run starts
+on a different preset and layout.
 
 ## Layout
 
 ```
-src/layout.inc   offsets of the global state struct `pl`
-src/sim.S        RNG, rules, grid tables, binning (serial + parallel phases),
-                 force kernels (AVX2 K<=8, AVX2 K<=16, AVX-512), step, CPUID
-src/threads.S    pthread workers, barriers, dynamic cell scheduling
-src/render.S     software renderer into an ARGB8888 buffer, PPM writer
-src/presets.S    the 31 pl-box rule generators, per-preset physics, preset
-                 install, shuffle bag, name lookup
-src/main.S       main: options, bench, frame dump, SDL2 window, keys,
-                 auto-cycle timer, headless frame loop
-ref/ref.c        C reference: same grid step + O(N^2) pl-box-style step
-ref/pl_state.h   C view of `pl` (offsets checked by _Static_assert)
-tests/test_step.c    asm vs reference comparison (make test)
-tests/test_presets.c presets vs pl-box, ranges, switch vs reference, A->B->A
-tests/plbox_ref.txt  attraction matrices printed by pl-box itself
-tests/test_cycle.sh  auto-cycle on the real binary (headless)
-tools/plbox_dump/    prints pl-box's matrices (regenerates plbox_ref.txt)
+src/layout.inc      offsets of the global state struct `pl`
+src/sim.S           RNG, rules, grid tables, binning (serial + parallel phases),
+                    force kernels (AVX2 K<=8, AVX2 K<=16, AVX-512), step, CPUID
+src/threads.S       pthread workers, barriers, dynamic cell scheduling
+src/spawn.S         pl-box's spawn layouts, wyrand (fastrand), weighted chooser
+src/presets.S       the 31 pl-box rule generators, curated list, pools, shuffle
+                    bag, preset install, name lookup
+src/palettes.S      palette lift / expand / distinguishability check, picking
+src/palettes_data.S the 91 palettes (generated by tools/gen_palettes.py)
+src/font.S          8x8 bitmap font (hand-drawn glyphs)
+src/render.S        software renderer, overlay text, PPM writer
+src/main.S          main: options, scenes and switching, bench, render bench,
+                    frame dump, SDL2 window, keys, overlay text, timer
+ref/ref.c           C reference: same grid step + O(N^2) pl-box-style step
+ref/pl_state.h      C view of `pl` and the asm entry points
+tests/test_step.c       asm vs reference comparison
+tests/test_spawns.c     spawn layouts vs pl-box (tests/plbox_spawns.txt), invariants
+tests/test_presets.c    presets vs pl-box, ranges, bag, switches and K = 2..16 scenes
+tests/test_overlay.c    overlay text pixels
+tests/test_cycle.sh     cycling, pools, pins and keys on the real binary (headless)
+tests/plbox_ref.txt     attraction matrices printed by pl-box itself
+tests/plbox_spawns.txt  spawn hashes printed by pl-box itself
+tools/plbox_dump/       runs pl-box's code (BIN=spawns for the spawn reference)
 tools/contact_sheet.sh  docs/presets.png
+tools/spawn_sheet.sh    docs/spawns.png
+tools/palette_sheet.sh  docs/palettes.png
+tools/window_titles.sh  real-window titles of this run's window only
 ```
 
 ### Memory layout
@@ -381,93 +603,148 @@ N=30000  K=9  world=1920x1080 fscale=0.3 dt=0.017 avx2-k16 threads=8  R=2 grid=5
 ALL TESTS PASSED
 ```
 
-**Preset tests** (`tests/test_presets.c`, `tests/test_cycle.sh`, both in
-`make test`):
+**Spawn tests** (`tests/test_spawns.c`):
 
-1. *pl-box's own matrices.* `tools/plbox_dump` runs pl-box's
-   `RuleMatrix::from_preset` for every preset and K = 1..16 and prints the
-   attraction values as f32 bit patterns. `cargo` works offline here; the
-   script copies `pl-core` into a temporary workspace with its own target
-   directory, so pl-box is not modified. The output is
-   `tests/plbox_ref.txt`. The test compares the asm generators bit for bit
-   (Random and Symmetric are random in both programs and are range-checked
-   only).
-2. *Every preset installed for every K:* K×K attraction in [-1, 1] and zero
-   outside, 0 < min r < max r within the preset's ranges, the preset's
-   physics, and the derived tables, max radius and grid bit-identical to
-   what the C reference derives from the same rules.
-3. *Shuffle bag* (620 picks through `pl_preset_apply`): never the current
-   preset, never a repeat within a round.
-4. *Switch vs reference:* run preset A for 20 steps, switch to B, load the C
-   reference from the asm state with B's rules, check the grid, tables and
-   particle order are bit-identical, then step both. As a negative control,
-   a third reference keeps A's (stale) rules on the same particles and must
-   disagree. Seven switches cover every kernel, 1 and 8 threads, grids that
-   grow and shrink, and a pair with the same physics where only the matrix
-   changes.
-5. *A → B → A:* with the same seed, A's 40 steps after the round trip are
-   bit-identical (positions, velocities, order, tables, grid).
-6. *Cycling on the real binary* (`--headless`): fake clock (100 timer
-   switches exactly 1.000 s apart, 3 full shuffle rounds), real monotonic
-   clock with a 0.05 s interval (all gaps ≥ 0.05 s), `--preset` plus
-   cycling, `--no-cycle`, `--interval 0`, C, Right/Left/R through `--keys`,
-   max radius and grid in every switch log line, unknown names rejected.
-
-Last run (excerpt; all 29 deterministic presets print the same line):
+1. *pl-box's own spawns.* `BIN=spawns tools/plbox_dump/run.sh` runs
+   pl-box's `Simulation::spawn_*` for 16 layouts, K = 2, 3, 5, 8, 13, 16,
+   two sizes (2000 particles at 1600×900, 1001 at 900×1400), each case from
+   a fixed `fastrand::seed`. It is built offline from a copy of `pl-core`
+   with its own target directory, so pl-box is untouched. For each case it
+   prints the particle count and an FNV-1a hash over every (x bits, y bits,
+   type) in order, giving `tests/plbox_spawns.txt`. The test seeds the asm
+   wyrand with the same value, runs the same layout unwrapped and compares.
+   The only layouts without a pl-box reference are `random` and
+   `star_fixed`, which are not pl-box functions.
+2. *Invariants of the installed spawn* for all 18 layouts and K = 1..16:
+   exactly N particles, all in [0, W) × [0, H) after wrapping, types < K,
+   ids a permutation of 0..N-1, zero velocity, and every type present for
+   the layouts whose construction guarantees it.
 
 ```
---- attraction matrices vs pl-box (RuleMatrix::from_preset run by tools/plbox_dump)
-  Snake         K=1..16: 16 matrices, 1496 values, bit-identical to pl-box
-  Helical       K=1..16: 16 matrices, 1496 values, bit-identical to pl-box
-  SkipPursuit   K=1..16: 16 matrices, 1496 values, bit-identical to pl-box
-  DriftPatch    K=1..16: 16 matrices, 1496 values, bit-identical to pl-box
-  29 of 29 deterministic presets bit-identical to pl-box (Random, Symmetric are random)
---- every preset installed for K = 1..16: ranges, physics, derived tables, grid
-  Helical       force 0.30 fric 0.40 core 0.60 minr [12,24) maxr [33,70)  attraction in [-1.000, +1.000]  OK
-  Swirl         force 1.40 fric 0.35 core 0.90 minr [12,20) maxr [28,45)  attraction in [-0.700, +0.700]  OK
+  radiant_fans  K=2  n=2000 pl-box gives 1334 particles, asm 2000 (documented deviation)
+  radiant_fans  K=2  n=1001 pl-box gives 668 particles, asm 1001 (documented deviation)
+bit-identical to pl-box (count + hash of all x, y, type):
+  pie           12/12 cases (K 2,3,5,8,13,16; 2000 @1600x900 and 1001 @900x1400)
+  soft_clusters 12/12 cases (K 2,3,5,8,13,16; 2000 @1600x900 and 1001 @900x1400)
+  radiant_fans  10/10 cases (K 2,3,5,8,13,16; 2000 @1600x900 and 1001 @900x1400)
+  polar_maze    12/12 cases (K 2,3,5,8,13,16; 2000 @1600x900 and 1001 @900x1400)
+  star          12/12 cases (K 2,3,5,8,13,16; 2000 @1600x900 and 1001 @900x1400)
+  ... (all 16 layouts: 12/12, radiant_fans 10/10)
+  total 190/190 identical, 2 cases where pl-box itself returns < N
+invariants of pl_spawn, N=3001, 1280x720, K=1..16 (min/max count per type at K=8):
+  pie           ok    K=8 per-type  330..401  (all types present)
+  soft_clusters ok    K=8 per-type  375..376  (all types present)
+  spiral        ok    K=8 per-type    0..751  (type coverage not guaranteed by pl-box)
+  star_fixed    ok    K=8 per-type  275..932  (type coverage not guaranteed by pl-box)
+ALL SPAWN TESTS PASSED
+```
+
+Type balance is pl-box's by construction: the type sequences are
+bit-identical. pl-box's spiral uses one species per turn and makes at most
+3.6 turns, so with K = 8 some types get no particles, in pl-box as well.
+
+**Preset and scene tests** (`tests/test_presets.c`):
+
+1. *pl-box's matrices:* all 29 deterministic generators bit-identical for
+   K = 1..16 (from the previous round, unchanged).
+2. *Every generator installed for every K:* ranges, physics, derived tables
+   and grid equal to the C reference's.
+3. *Shuffle bag* for each pool: only entries of the pool, never the current
+   one twice in a row, each once per round; curated entries install their
+   own K, generated ones a K in 2..16. Entry lookup (`c:`/`g:`, curated
+   first, generated first in the generated pool).
+4. *Switch vs reference* with a stale-rule control (previous round).
+5. *A → B → A* bit-identical (previous round).
+6. *Scene switches over K = 2..16:* from the previous scene, switch to a
+   generated preset with that K, a spawn layout and a palette pick, the way
+   the window does. Then check: the matrix is the new generator's for K
+   (zero outside K×K), the kernel is AVX2-k8 / AVX2-k16 / AVX-512 as K
+   requires, every type < K, `pl_colors` holds the palette's K colours as
+   built, the palette qualifies for K and differs from the previous one,
+   and the grid matches the reference's. Then 25 steps against the C
+   reference loaded from the new state, and against a stale reference
+   holding the previous preset's rules regenerated for the new K. Run on
+   AVX2 with 1 thread and AVX-512 with 8 threads. The stale reference must
+   be off on more than 10% of the particles.
+
+```
 --- shuffle bag
-  620 picks: never the current preset, each preset once per round, 20 full rounds  OK
---- switch, then asm vs C reference loaded with the new rules from the same state
-  Shells -> Checker  N=4000 K=6 avx2-k8 threads=1: maxr 44.8 -> 69.6, grid 44x31 -> 28x20, state bit-identical to ref
-    30 steps: asm vs ref(new rules) max 6.1e-05 px, 0/4000 particles > 1e-03; vs brute(new) max 6.1e-05 px, 0 > 1e-03
-              asm vs ref(OLD rules) max 0.72 px, 4000/4000 particles > 1e-03 (stale rules detected)  OK
-  Shells -> Dimers  N=4000 K=6 avx2-k8 threads=1: maxr 44.9 -> 43.9, grid 44x31 -> 45x31, state bit-identical to ref
-    30 steps: asm vs ref(new rules) max 6.1e-05 px, 0/4000 particles > 1e-03; vs brute(new) max 6.1e-05 px, 0 > 1e-03
-              asm vs ref(OLD rules) max 0.79 px, 3999/4000 particles > 1e-03 (stale rules detected)  OK
-  Helical -> SkipPursuit  N=20000 K=7 avx512 threads=8: maxr 69.1 -> 44.9, grid 55x31 -> 85x48, state bit-identical to ref
-    20 steps: asm vs ref(new rules) max 1.8e-03 px, 1/20000 particles > 1e-03; vs brute(new) max 1.8e-03 px, 1 > 1e-03
-              asm vs ref(OLD rules) max 0.40 px, 19997/20000 particles > 1e-03 (stale rules detected)  OK
---- A -> B -> A with the same seed
-  Shells -> Checker -> Shells  N=5000 K=6 threads=1 (grid 40x31 -> 25x20 -> 40x31): 40 steps of A bit-identical  OK
-  Random -> BlueNoise -> Random  N=20000 K=8 threads=8 (grid 40x31 -> 25x20 -> 40x31): 40 steps of A bit-identical  OK
-ALL PRESET TESTS PASSED
-  fake clock: 101 switches, 3 full rounds, each preset once per round, never twice in a row  OK
-  fake clock: 100 timer switches, exactly 1.000 s apart  OK
-  real clock: 91 switches, 3 full rounds, each preset once per round, never twice in a row  OK
-  real clock: 90 timer switches, gaps >= 0.050 s (min 0.050, max 0.051 s as logged)  OK
-  --preset helicalladder: starts on Helical, 5 timer switches in 5 s  OK
+  pool curated   17 entries, 340 picks: only pool entries, never the current one, each once per round, 21 full rounds; K = the curated count  OK
+  pool generated 31 entries, 620 picks: only pool entries, never the current one, each once per round, 20 full rounds; K drawn 2..16  OK
+  pool all       48 entries, 960 picks: only pool entries, never the current one, each once per round, 20 full rounds; K curated count / drawn  OK
+--- scene switches over K = 2..16 (preset, type count, spawn, palette) vs C reference
+  K=2  ChiralBand    spawn blocks        palette fresh-mint               avx2-k8  threads=1 grid 53x33: ref max 1.5e-05 px (0 > 1e-03), stale ref 5998/6000 off  OK
+  K=8  TriSpiral     spawn rainbow_rings palette tropical-punch           avx2-k8  threads=1 grid 49x31: ref max 6.1e-05 px (0 > 1e-03), stale ref 6000/6000 off  OK
+  K=9  Chains2       spawn spiral_arms   palette candy-neon               avx2-k16 threads=1 grid 31x20: ref max 6.1e-05 px (0 > 1e-03), stale ref 6000/6000 off  OK
+  K=16 BiasedWave    spawn twin_spirals  palette jewel-neon               avx2-k16 threads=1 grid 31x20: ref max 6.1e-05 px (0 > 1e-03), stale ref 5998/6000 off  OK
+  K=7  Helical       spawn star_fixed    palette classic-rainbow          avx512   threads=8 grid 31x20: ref max 1.4e-03 px (1 > 1e-03), stale ref 6000/6000 off  OK
+  K=16 BiasedWave    spawn twin_spirals  palette rainbow-bold             avx512   threads=8 grid 31x20: ref max 6.1e-05 px (0 > 1e-03), stale ref 5998/6000 off  OK
+  ... (30 lines, all OK)
+```
+
+The scene sweep does not use pl-box's exact `star` layout. It puts all
+6000 particles within 1 px of the centre, where float summation order
+alone (asm vs C) flips forces at d = minr for dozens of particles. That
+says nothing about stale rules, so that slot uses `pie` instead. The
+single 1.4e-3 px particle above is the same minr jump described below.
+
+**Overlay test** (`tests/test_overlay.c`): known strings ("FPS 60.0", a
+newline case, scale 2, clipping at the right and bottom edges) are drawn by
+`pl_draw_text` and compared pixel for pixel with an image the test builds
+from its own copy of the glyph art: text pixels, a black shadow offset by
+(scale, scale) where the text does not cover it, background elsewhere.
+
+```
+  "FPS 60.0"                          80x12  scale 1:  101 text px,   84 shadow px, 0 differing  OK
+  "FPS 60.0\nK=9" (newline)           80x24  scale 1:  140 text px,  116 shadow px, 0 differing  OK
+  "FPS 60.0" at scale 2              140x20  scale 2:  404 text px,  336 shadow px, 0 differing  OK
+  "K=96" clipped right and bottom     30x12  scale 1:   43 text px,   30 shadow px, 0 differing  OK
+  "60" clipped at scale 2             25x13  scale 2:   74 text px,   41 shadow px, 0 differing  OK
+ALL OVERLAY TESTS PASSED
+```
+
+**Cycling and keys on the real binary** (`tests/test_cycle.sh`,
+`--headless`, every key through `--keys`):
+
+```
+  pool curated, fake clock: 201 switches, 12 full rounds of 17, never twice in a row  OK
+  pool curated: timer switches exactly 1.000 s apart  OK
+  pool generated, fake clock: 201 switches, 6 full rounds of 31, never twice in a row  OK
+  pool all, fake clock: 201 switches, 4 full rounds of 48, never twice in a row  OK
+  201 switches: curated K as listed, 15 different generated K in 2..16, 13 spawn layouts (soft_clusters 42), palette never twice in a row  OK
+  real clock: 108 timer switches, gaps >= 0.050 s (min 0.050, max 0.056 s as logged)  OK
+  --preset helicalladder: starts on Helical (generated), 5 timer switches in 5 s  OK
+  --preset g:SkipPursuit -> generated; skippursuit -> curated with K=7  OK
   --no-cycle: no automatic switch in 20 s  OK
   --keys cc: cycling back on, 4 timer switches in 20 s (at 5, 10, 15, 20)  OK
-  keys > > < r: start:DriftPatch next:Random next:Symmetric prev:Random reroll:Random   OK
+  keys > > < r: start:Bipartite next:SkipPursuit next:Conveyor prev:SkipPursuit reroll:SkipPursuit   OK
+  generated pool, keys > > <: start:DriftPatch next:Random next:Symmetric prev:Random   OK
+  keys p p p: pool generated -> all -> curated, presets from: generated generated curated   OK
+  keys s s s S n k k f: spawn pie line ring rainbow_ring ring ring | 2 new palettes, overlay off  OK
+  keys ] ] ] [ [ 3: K 7 8 9 10 9 8 3 (same preset and spawn)  OK
+  --spawn heart --palette aurora --types 12: pinned on all 21 switches  OK
+  switch log: max radius and grid rebuilt on every switch  OK
+  --preset nosuchpreset rejected  OK   (also --spawn, --palette, --pool)
 ALL CYCLE TESTS PASSED
 ```
 
-In the 20 000-particle switch cases one particle out of 20 000 ends up
-2e-3 px off. Step by step, all particles agree to 5e-7 px until step 12.
-Then one particle jumps and drifts linearly, and the C grid and brute-force
-references agree with each other. This is pl-box's force jump at d = minr
-(below): one float ulp in d puts a pair on the other side of the jump.
-The curated presets use 3.7× the old force scale, so the jump is bigger.
-The switch test therefore allows up to N/1000 particles above 1e-3 px
-(each still under 0.05 px). A stale matrix moves essentially every particle
-by 0.4–0.9 px.
+The 13 spawn layouts are exactly pl-box's chooser set (with `star_fixed`);
+the test fails if a switch picks ring, spiral, line_mixed, random or
+pl-box's star.
 
-The residual differences are a few float ulps. They come from summation
-order and the rsqrt + Newton 1/d versus the C `1/sqrtf`. pl-box's force law
-has a jump at d = minr, so the C grid and asm can disagree by up to ~5e-4 px
-over 30 steps when a pair sits exactly on minr.
+In the 20 000-particle switch cases one particle out of 20 000 ends up
+2e-3 px off. Step by step, all particles agree to 5e-7 px until step 12;
+then one particle jumps and drifts linearly, while the C grid and
+brute-force references agree with each other. This is pl-box's force jump
+at d = minr: one float ulp in d puts a pair on the other side of the jump.
+The switch tests therefore allow up to N/1000 particles above 1e-3 px
+(each still under 0.05 px). A stale matrix moves essentially every
+particle.
 
 ## Performance
+
+Measured in the first round; the step code has not changed since (see the
+end of this section).
 
 AMD Ryzen 7 255 (Zen 4, 8 cores / 16 threads, mobile), Linux, gcc 16.2,
 clang 22.1. Constant density (10k particles per 1920×1080, the world grows
@@ -509,80 +786,87 @@ Thread scaling at 200k (one run each, shared machine): 1 → 79.5,
 logical CPU, so other processes preempt the spinning phases. SMT siblings
 also share the FP units this kernel saturates.
 
-**After adding presets** (kernels untouched; `make bench`, which uses the
-plain random rules exactly as before). The old build is commit `fe587ee`
-in a separate worktree, run alternately with the new one. ns/particle-step,
-4 runs each (runs 1, 3, 4 shown; in run 2 another session's `beam.smp`
-took ~9 cores during both builds and the numbers are meaningless):
 
-| particles | threads | before (fe587ee) | after |
-|---:|--:|---|---|
-| 10 000 | 1 | 63.8 / 66.2 / 63.5 | 63.2 / 65.4 / 63.7 |
-| 50 000 | 1 | 61.6 / 68.5 / 65.1 | 61.5 / 69.9 / 63.7 |
-| 200 000 | 1 | 63.3 / 66.6 / 65.8 | 63.3 / 68.8 / 64.1 |
-| 10 000 | 8 | 11.1 / 13.4 / 11.2 | 10.1 / 12.5 / 11.3 |
-| 50 000 | 8 | 9.2 / 12.8 / 11.4 | 11.3 / 11.0 / 11.1 |
-| 200 000 | 8 | 11.3 / 13.0 / 11.2 | 10.6 / 10.3 / 10.8 |
+**This round (spawns, curated presets, palettes, overlay).** The step code
+did not change: `src/sim.S`, `src/threads.S` and `src/layout.inc` are
+byte-identical to the previous round, and `objdump -d` of `sim.o` and
+`threads.o` gives identical machine code for both builds. `make bench`
+(plain random rules, uniform start, as before) was run alternately with the
+previous build (`5aada9e`, in a separate worktree), 4 runs each. The best
+of 4 is shown in ns per particle-step. Load average fell from 15 to 11
+during the runs; earlier attempts at load 30–60 were meaningless (one
+8-thread run took 1183 ns).
 
-Same speed within run-to-run noise (load average ≈ 9 during runs 3–4).
-Speed with a preset depends on its radius range, not on the code:
-200 000 particles, 1 thread: Snake (max r 33–70) 69 ns, Bipartite and
-Swirl (max r 28–45, smaller cells, fewer candidates) 43 ns per
-particle-step.
+| particles | threads | before (5aada9e) | after | after, steps/s |
+|---:|--:|--:|--:|--:|
+| 10 000 | 1 | 61.2 | 62.1 | 1 610 |
+| 50 000 | 1 | 60.4 | 61.8 | 324 |
+| 200 000 | 1 | 61.5 | 62.3 | 80 |
+| 10 000 | 8 | 9.9 | 9.9 | 10 100 |
+| 50 000 | 8 | 8.9 | 9.6 | 2 080 |
+| 200 000 | 8 | 9.2 | 8.9 | 562 |
 
-Window (Wayland/niri, run for a few seconds with `timeout`, read back via
-`niri msg windows`): 20 000 particles in 1600×900, 8 threads, AVX-512: title
-"120 fps | step 0.79 ms" with vsync. 50 000 particles with `--no-vsync`:
-"159 fps | step 2.62 ms" at 2 steps per frame.
+The differences are within run-to-run noise (individual runs of the same
+build vary by 2–5 ns single-threaded and 2–3 ns on 8 threads).
+
+Speed with a preset depends on its radius range, not on the code
+(previous round's measurement: the curated presets, max r 28–45, ~43 ns
+per particle-step single-threaded at 200 000 particles; the render-default
+ones, max r 33–70, ~69 ns).
+
+Switch cost at 200 000 particles: 12 ms mean, 7–28 ms by layout (see
+[Cost of a switch](#cost-of-a-switch)). Overlay: 0.05 ms per frame (see
+[Overlay](#overlay)).
 
 ## What was tested and what not
 
-- `make test` passes (output above). `make bench` and the reference benches
-  were run, giving the numbers above.
-- The SDL window opened on this Wayland session (niri, native Wayland) and
-  ran for 6–10 s with no errors, and the compositor reported the title with
-  live fps. I did not look at the window contents. The visual check is the
-  `--dump-frame` output, which goes through the same `pl_render` code.
+- `make test` passes: step vs reference, spawns vs pl-box, overlay pixels,
+  presets and K = 2..16 scenes vs reference, cycling and keys (outputs
+  above). `make bench` was run against the previous build (above).
+- **Real window** (Wayland, niri): run with `timeout` several times, titles
+  read through `niri msg -j windows`, for this run's window only
+  (`tools/window_titles.sh`). Seen: scene changes every `--interval` (5 s
+  run above), the countdown, curated presets with their own K (7, 8, 9),
+  spawn layouts and palettes changing with each switch, a structured spawn
+  at start-up, fps and step time. I did not look at the window contents.
+  The visual check is the `--dump-frame` output (with `--overlay` for the
+  overlay), which goes through the same `pl_render` and `pl_draw_text`.
 - Key presses were not sent to the real window, to avoid injecting input
-  into the desktop. The key handler is the same function `--keys` drives
-  headlessly. `+`, `-`, `1`–`9`, `r` and `n` were exercised that way
-  (counts and frames change as expected), and so were Right/Left (`>`/`<`),
-  C and R (`tests/test_cycle.sh`). Space and Esc are only reachable from the
-  window; Right/Left arrive there as SDL keycodes 0x4000004F/0x40000050,
-  which were not pressed for real.
-- Presets in the window: run with `timeout` for 8–9 s with `--interval 3`
-  and `--interval 4`. Read back through `niri msg windows`, the title went
-  from "ChiralBand (18/31) | next in 1 s" to "Bipartite (8/31) | next in
-  3 s", and the switch log showed timer switches 3.0 s apart. Two launches
-  without `--seed` started on different presets (Snake, PrimeHop). The
-  machine was loaded by another session at the time (40–49 fps instead of
-  120). I did not look at the window contents. The visual check is
-  `docs/presets.png`, made with the same renderer.
+  into the desktop. Every key except Space and Esc goes through the same
+  handler that `--keys` drives headlessly, and the cycle test exercises
+  them. In the window, Shift+S is read from SDL's key modifiers
+  (`keysym.mod & KMOD_SHIFT`). That path was not pressed for real.
+- The machine was heavily shared during this round (load average 15–65,
+  from `beam.smp` test runs of other sessions and swapping). Window fps and
+  the switch timings were measured under that load. The bench table above
+  is from the quietest period.
 
 ## Not done / limitations
 
-- pl-box's 13 spawn patterns (pie, rings, spirals, soft clusters, ...) are
-  not ported. Every switch scatters uniformly. pl-box notes that this
-  leaves its directional presets as "diffuse dust", and that is what about
-  a third of the presets look like here (see above).
-- Not ported from pl-box's preset handling: `PresetConfig::jittered` (±18%
-  physics variation per instance), the per-preset playback speed
-  (sub-steps per frame, here always `--steps-per-frame`), the curated type
-  count per preset (K stays as chosen), and the curated palette. No brush,
-  no mutation drift, wrap boundary only.
-- Random and Symmetric use this program's splitmix64 RNG, not pl-box's
-  `fastrand`, so their matrices (and every preset's random radii) are not
-  the same numbers as pl-box's, only the same distributions.
-- Switching re-scatters on one thread (~4 ms at 200 000 particles).
-- The world is the window size, drawn 1:1. There is no zoom/pan and the
-  window does not resize.
-- `+`/`-` and `1`–`9` respawn all particles rather than adding or removing
-  some.
+- pl-box's exact `star` is replaced by `star_fixed` in the weighted chooser
+  (one byte in `pattern_map` restores it). `radiant_fans` with K < 3 fills
+  N instead of pl-box's fewer particles. The chooser's draw and the
+  `random` layout use this program's splitmix64 stream, not `rand`'s
+  `SmallRng`, so they are pl-box's distributions but not its numbers.
+- Not ported from pl-box: `PresetConfig::jittered` (±18% physics variation
+  per instance), the per-preset playback speed (curated `speed` 1–4
+  sub-steps per frame is stored in the table but unused; the window uses
+  `--steps-per-frame`), pl-box's shuffled colour order within a palette
+  (kept in list order here), brush, mutation drift, the matrix view, and
+  pl-box's 5-minute auto-restart (the timer here is `--interval`).
+- Palettes: "clearly distinguishable" is a redmean distance ≥ 60 between
+  every pair. At 15–16 types only 6–7 palettes qualify. `--palette` can
+  force a non-qualifying one (e.g. a single-hue ramp at K = 16).
+- `[`, `]`, 1–9 and S change the current scene only. The next switch picks
+  the preset's own type count and a spawn layout again (use `--types` /
+  `--spawn` to pin them).
+- The spawn and the bin after a switch run on one thread (7–28 ms at
+  200 000 particles).
+- The world is the window size, drawn 1:1. No zoom/pan, and the window does
+  not resize. The overlay scale follows the window height (2 at 900 px).
 - No Newton's-third-law pair sharing: each pair is evaluated from both
-  sides (like pl-box), which doubles the arithmetic but avoids write
-  conflicts.
-- AVX-512 always keeps the Newton step on `rsqrt14`. Dropping it (14-bit
-  1/d) would cut more register pressure but was left out for accuracy.
-- Up to 16 types (one zmm table row). Keys only reach 9.
+  sides (like pl-box).
+- AVX-512 always keeps the Newton step on `rsqrt14`.
+- Up to 16 types (one zmm table row).
 - Binning is serial when running single-threaded (~7% of the step).
 - Linux x86-64 only (SysV ABI, glibc, PIE).
