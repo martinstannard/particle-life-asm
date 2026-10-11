@@ -175,5 +175,54 @@ for opt in "--preset nosuchpreset" "--spawn nosuch" "--palette nosuch" "--pool n
     if $BIN $opt --headless 1 > /dev/null 2>&1; then fail "$opt accepted"; else ok "$opt rejected"; fi
 done
 
+# 13. --touches: finger events through the gesture recogniser, each gesture
+# logged as "touch: NAME -> ACTION" and run through the key handler
+touch() {   # $1 = event script; prints "gesture>action ..." then the key-driven reasons
+    $BIN $COMMON --preset Shells --no-cycle --log-switches --headless 1 --touches "$1" > "$LOG"
+    echo "rc=$? $(awk '$3 == "touch:" { printf "%s>%s ", $4, $6 }
+                      $4 == "->" && $3 != "start" { printf "[%s] ", $3 }
+                      $3 == "overlay" { printf "[overlay-%s] ", $4 }' "$LOG")"
+}
+tcase() {   # $1 = label, $2 = script, $3 = expected
+    got=$(touch "$2")
+    [ "$got" = "$3" ] && ok "touch $1: $got" || fail "touch $1: got '$got', want '$3'"
+}
+tcase "tap"                 "d0.5,0.5@0 u0.5,0.5@100"               "rc=0 tap>next-scene [space] "
+tcase "long press"          "d0.5,0.5@0 u0.5,0.5@800"               "rc=0 long-press>reroll [reroll] "
+tcase "swipe right to left" "d0.6,0.5@0 m0.5,0.5@40 m0.4,0.5@80 u0.4,0.5@120" "rc=0 swipe-left>next-preset [next] "
+tcase "swipe left to right" "d0.4,0.5@0 u0.6,0.5@100"               "rc=0 swipe-right>prev-preset [prev] "
+tcase "swipe up"            "d0.5,0.6@0 u0.5,0.4@100"               "rc=0 swipe-up>next-palette [palette] "
+tcase "swipe down"          "d0.5,0.4@0 u0.5,0.6@100"               "rc=0 swipe-down>overlay [overlay-off] "
+tcase "two fingers"         "d0.5,0.5@0 d0.6,0.5@20#1 u0.5,0.5@100 u0.6,0.5@110#1" "rc=0 two-finger-tap>pause "
+tcase "two fingers, first lifts last" "d0.5,0.5@0 d0.6,0.5@20#7 u0.6,0.5@90#7 u0.5,0.5@100" "rc=0 two-finger-tap>pause "
+tcase "two fingers held"    "d0.5,0.5@0 d0.6,0.5@20#1 u0.5,0.5@800 u0.6,0.5@810#1" "rc=0 unrecognised>none "
+tcase "two fingers moved"   "d0.5,0.5@0 d0.6,0.5@20#1 m0.7,0.5@50 u0.7,0.5@100 u0.6,0.5@110#1" "rc=0 unrecognised>none "
+tcase "up without down"     "u0.5,0.5@0 m0.5,0.5@10"                "rc=0 stray-up>ignored "
+tcase "second down of a finger already down" "d0.5,0.5@0 d0.5,0.5@10 u0.5,0.5@100" "rc=0 tap>next-scene [space] "
+tcase "tap move 0.039 (below 0.04)" "d0.5,0.5@0 u0.539,0.5@100"     "rc=0 tap>next-scene [space] "
+tcase "move 0.041 (above 0.04, below swipe)" "d0.5,0.5@0 u0.541,0.5@100" "rc=0 unrecognised>none "
+tcase "held 699 ms"         "d0.5,0.5@0 u0.5,0.5@699"               "rc=0 tap>next-scene [space] "
+tcase "held 700 ms"         "d0.5,0.5@0 u0.5,0.5@700"               "rc=0 long-press>reroll [reroll] "
+tcase "long press moved 0.041" "d0.5,0.5@0 u0.5,0.541@900"          "rc=0 unrecognised>none "
+tcase "swipe 0.149"         "d0.5,0.5@0 u0.351,0.5@100"             "rc=0 unrecognised>none "
+tcase "swipe 0.151"         "d0.5,0.5@0 u0.349,0.5@100"             "rc=0 swipe-left>next-preset [next] "
+tcase "diagonal, x wins"    "d0.5,0.5@0 u0.7,0.4@100"               "rc=0 swipe-right>prev-preset [prev] "
+tcase "diagonal, y wins"    "d0.5,0.5@0 u0.4,0.3@100"               "rc=0 swipe-up>next-palette [palette] "
+tcase "tap just outside the exit corner (x 0.121)" "d0.121,0.02@0 u0.121,0.02@80" "rc=0 tap>next-scene [space] "
+tcase "tap just outside the exit corner (y 0.051)" "d0.05,0.051@0 u0.05,0.051@80" "rc=0 tap>next-scene [space] "
+tcase "long press in the exit corner" "d0.05,0.02@0 u0.05,0.02@900" "rc=0 long-press>reroll [reroll] "
+tcase "two gestures"        "d0.6,0.5@0 u0.4,0.5@100 d0.4,0.5@500 u0.6,0.5@600" "rc=0 swipe-left>next-preset [next] swipe-right>prev-preset [prev] "
+$BIN $COMMON --preset Shells --no-cycle --log-switches --headless 1 --touches "d0.119,0.049@0 u0.119,0.049@80" > "$LOG"; rc=$?
+grep -q 'touch: exit-tap -> quit' "$LOG" && [ $rc -eq 0 ] && ok "touch tap just inside the exit corner (0.119, 0.049): quit" || fail "touch exit corner edge"
+# the exit tap quits like Esc: the program ends there, before any frame
+$BIN $COMMON --preset Shells --no-cycle --log-switches --headless 1 \
+    --touches "d0.05,0.02@0 u0.05,0.02@80 d0.5,0.5@200 u0.5,0.5@300" > "$LOG"; rc=$?
+t=$(grep -c 'touch:' "$LOG"); h=$(grep -c '^headless:' "$LOG")
+grep -q 'touch: exit-tap -> quit' "$LOG" && [ $rc -eq 0 ] && [ "$t" -eq 1 ] && [ "$h" -eq 0 ] \
+    && ok "touch exit tap (top left): quit, later events and the frame loop not run" || fail "touch exit tap: rc $rc, $t touch lines, $h headless lines"
+for bad in "d0.5,0.5" "x0.5,0.5@0" "d0.5;0.5@0" "d0.5,0.5@0#" "d0.5,0.5@0u0.5,0.5@1"; do
+    if $BIN $COMMON --headless 1 --touches "$bad" > /dev/null 2>&1; then fail "--touches '$bad' accepted"; else ok "--touches '$bad' rejected"; fi
+done
+
 [ $fails -eq 0 ] && echo "ALL CYCLE TESTS PASSED" || echo "CYCLE TESTS FAILED"
 [ $fails -eq 0 ]

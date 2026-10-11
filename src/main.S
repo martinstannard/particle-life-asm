@@ -17,6 +17,9 @@
 .set SDL_TEXTUREACCESS_STREAMING, 1
 .set SDL_QUIT,              0x100
 .set SDL_KEYDOWN,           0x300
+.set SDL_FINGERDOWN,        0x700
+.set SDL_FINGERMOTION,      0x701
+.set SDL_FINGERUP,          0x702
 .set KMOD_SHIFT,            0x0003
 .set SDLK_KP_MINUS,         0x40000056
 .set SDLK_KP_PLUS,          0x40000057
@@ -35,7 +38,19 @@
 .set KEEP_PALETTE,          1
 .set KEEP_SPAWN,            2
 
+# Touch gestures (on_touch). A gesture starts with the first finger down
+# and ends when the last finger is up; travel is measured on the first
+# finger, in SDL's normalised coordinates (0..1 across the window), on its
+# larger axis; times are SDL event timestamps in ms. Tune here.
         .section .rodata
+        .balign 4
+T_TAP_MOVE:  .float 0.04             # tap / long press / two-finger tap: travel below this
+T_SWIPE:     .float 0.15             # swipe: travel on the dominant axis at least this
+T_EXIT_X:    .float 0.12             # exit corner (top left): x below this ...
+T_EXIT_Y:    .float 0.05             # ... and y below this, a short tap there quits
+T_LONG_MS:   .long 700               # long press: held at least this; a tap is shorter
+.set TMAX_FINGERS,          10
+
 s_particles: .asciz "--particles"
 s_types:     .asciz "--types"
 s_seed:      .asciz "--seed"
@@ -51,6 +66,7 @@ s_spf:       .asciz "--steps-per-frame"
 s_novsync:   .asciz "--no-vsync"
 s_cdiv:      .asciz "--cell-div"
 s_keys:      .asciz "--keys"
+s_touches:   .asciz "--touches"
 s_preset:    .asciz "--preset"
 s_interval:  .asciz "--interval"
 s_mutate:    .asciz "--mutate"
@@ -82,6 +98,40 @@ s_ev_log:    .asciz "%9.3f s  %-7s -> spawn %-13s palette %-22s K=%u\n"
 s_mut_log:   .asciz "%9.3f s  mutate %u rule value(s)\n"
 s_cycle_log: .asciz "%9.3f s  auto-cycle %s\n"
 s_ovl_log:   .asciz "%9.3f s  overlay %s\n"
+s_touch_log: .asciz "%9.3f s  touch: %s -> %s\n"
+s_badtouch:  .asciz "bad --touches event at '%s' (want d|m|u X,Y@MS[#ID])\n"
+# gestures: name, action (the log) and the key on_key runs (0 = none)
+s_g_tap:     .asciz "tap"
+s_g_long:    .asciz "long-press"
+s_g_swl:     .asciz "swipe-left"
+s_g_swr:     .asciz "swipe-right"
+s_g_swu:     .asciz "swipe-up"
+s_g_swd:     .asciz "swipe-down"
+s_g_two:     .asciz "two-finger-tap"
+s_g_exit:    .asciz "exit-tap"
+s_g_none:    .asciz "unrecognised"
+s_g_stray:   .asciz "stray-up"
+s_a_tap:     .asciz "next-scene"
+s_a_long:    .asciz "reroll"
+s_a_swl:     .asciz "next-preset"
+s_a_swr:     .asciz "prev-preset"
+s_a_swu:     .asciz "next-palette"
+s_a_swd:     .asciz "overlay"
+s_a_two:     .asciz "pause"
+s_a_exit:    .asciz "quit"
+s_a_none:    .asciz "none"
+s_a_stray:   .asciz "ignored"
+g_keys:      .byte ' ', 'r', '>', '<', 'k', 'f', 'z', 27, 0, 0
+.set G_TAP, 0
+.set G_LONG, 1
+.set G_SWL, 2
+.set G_SWR, 3
+.set G_SWU, 4
+.set G_SWD, 5
+.set G_TWO, 6
+.set G_EXIT, 7
+.set G_NONE, 8
+.set G_STRAY, 9
 s_on:        .asciz "on"
 s_off:       .asciz "off"
 s_next_in:   .asciz "next in %.0f s"
@@ -137,9 +187,13 @@ s_usage:     .ascii "usage: particle_life [--particles N] [--types K(1-16), pins
              .ascii "         [--log-switches]\n"
              .ascii "         [--keys STR]  feed key presses (e.g. \"r9+\") to the key handler first;\n"
              .ascii "                       '>' '<' = Right Left, 'S' = Shift+S\n"
+             .ascii "         [--touches STR] feed finger events to the gesture recogniser first,\n"
+             .ascii "                       e.g. \"d0.5,0.5@0 u0.5,0.5@100\" (d/m/u X,Y@MS[#FINGER])\n"
              .ascii "keys: Space next scene, Z/Return pause, Right/Left next/previous preset, P pool, C auto-cycle,\n"
              .ascii "      R re-roll, S/Shift+S next/previous spawn, N respawn, K palette,\n"
              .ascii "      [ ] fewer/more types, 1-9 types, +/- particles, F overlay, Esc quit\n"
+             .ascii "touch: tap next scene, long press re-roll, swipe left/right next/previous preset,\n"
+             .ascii "      swipe up palette, swipe down overlay, two-finger tap pause, tap top-left corner quit\n"
              .byte 0
 s_noavx2:    .asciz "error: this program needs a CPU with AVX2 and FMA\n"
 s_no512:     .asciz "error: AVX-512F not available on this CPU\n"
@@ -166,6 +220,8 @@ F_CORE:      .float 0.6
 # 4 = double
         .section .data.rel.ro, "aw"
         .balign 8
+g_names:     .quad s_g_tap, s_g_long, s_g_swl, s_g_swr, s_g_swu, s_g_swd, s_g_two, s_g_exit, s_g_none, s_g_stray
+g_actions:   .quad s_a_tap, s_a_long, s_a_swl, s_a_swr, s_a_swu, s_a_swd, s_a_two, s_a_exit, s_a_none, s_a_stray
 opts:
         .quad s_particles, opt_n,       0
         .quad s_types,     opt_k,       0
@@ -182,6 +238,7 @@ opts:
         .quad s_novsync,   opt_novsync, 3
         .quad s_cdiv,      opt_cdiv,    0
         .quad s_keys,      opt_keys,    2
+        .quad s_touches,   opt_touches, 2
         .quad s_preset,    opt_preset,  2
         .quad s_interval,  opt_interval, 4
         .quad s_mutate,    opt_mutate,  4
@@ -205,6 +262,7 @@ opt_seed:    .quad -1                # -1 = not given: 1, or the clock for the w
 opt_simd:    .quad 0
 opt_dump:    .quad 0
 opt_keys:    .quad 0
+opt_touches: .quad 0
 opt_preset:  .quad 0
 opt_pool:    .quad 0
 opt_spawn:   .quad 0
@@ -258,6 +316,16 @@ g_fps:       .skip 8                # last measured fps (-1 = none: dump)
 g_ms:        .skip 8                # last measured ms per step
 cbuf:        .skip 48
 kbuf:        .skip 64
+tev:         .skip 48               # an SDL_TouchFingerEvent built by --touches
+t_ids:       .skip 8 * TMAX_FINGERS # finger ids down now
+t_first:     .skip 8                # id of the gesture's first finger
+t_count:     .skip 4                # fingers down now
+t_max:       .skip 4                # most fingers down at once in this gesture
+t_t0:        .skip 4                # timestamp of the first finger down
+t_sx:        .skip 4                # first finger: start x, y and last x, y
+t_sy:        .skip 4
+t_lx:        .skip 4
+t_ly:        .skip 4
 
         .text
 
@@ -1402,6 +1470,257 @@ on_key:
 99:     pop     rbx
         ret
 
+# feed one SDL_TouchFingerEvent (rdi) to the gesture recogniser; when the
+# last finger lifts, classify the gesture, log it and run its key through
+# on_key. Returns eax = 1 to quit.
+on_touch:
+        push    rbx
+        push    r12
+        push    r13                     # rsp aligned
+        mov     rbx, rdi
+        xor     r13d, r13d
+        cmp     qword ptr [rbx + 8], -1 # SDL_TOUCH_MOUSEID: touch made up from the mouse
+        je      9f
+        mov     rax, [rbx + 16]         # fingerId
+        lea     r8, [rip + t_ids]
+        mov     edx, [rip + t_count]
+        xor     r12d, r12d
+1:      cmp     r12d, edx
+        jae     2f
+        cmp     rax, [r8 + r12*8]
+        je      3f
+        inc     r12d
+        jmp     1b
+2:      mov     r12d, -1                # r12d = its slot, -1 = not down
+3:      mov     ecx, [rbx]
+        cmp     ecx, SDL_FINGERDOWN
+        je      20f
+        cmp     ecx, SDL_FINGERMOTION
+        je      30f
+        cmp     ecx, SDL_FINGERUP
+        jne     9f
+        test    r12d, r12d              # up
+        jns     4f
+        mov     r12d, G_STRAY           # up without down
+        jmp     80f
+4:      call    t_track
+        mov     edx, [rip + t_count]
+        dec     edx
+        mov     [rip + t_count], edx
+        mov     rax, [r8 + rdx*8]       # last slot into the freed one
+        mov     [r8 + r12*8], rax
+        test    edx, edx
+        jnz     9f
+        # the gesture is over
+        vmovss  xmm0, [rip + t_lx]
+        vsubss  xmm0, xmm0, [rip + t_sx]        # dx
+        vmovss  xmm1, [rip + t_ly]
+        vsubss  xmm1, xmm1, [rip + t_sy]        # dy
+        vpcmpeqd xmm5, xmm5, xmm5
+        vpsrld  xmm5, xmm5, 1
+        vandps  xmm2, xmm0, xmm5                # |dx|
+        vandps  xmm3, xmm1, xmm5                # |dy|
+        vmaxss  xmm4, xmm2, xmm3                # travel
+        mov     eax, [rbx + 4]
+        sub     eax, [rip + t_t0]               # held, ms
+        mov     r12d, G_NONE
+        cmp     dword ptr [rip + t_max], 1
+        je      5f
+        vucomiss xmm4, [rip + T_TAP_MOVE]       # two or more fingers
+        jae     80f
+        cmp     eax, [rip + T_LONG_MS]
+        jae     80f
+        mov     r12d, G_TWO
+        jmp     80f
+5:      vucomiss xmm4, [rip + T_TAP_MOVE]
+        jae     6f
+        mov     r12d, G_LONG
+        cmp     eax, [rip + T_LONG_MS]
+        jae     80f
+        mov     r12d, G_TAP
+        vmovss  xmm5, [rip + t_sx]
+        vucomiss xmm5, [rip + T_EXIT_X]
+        jae     80f
+        vmovss  xmm5, [rip + t_sy]
+        vucomiss xmm5, [rip + T_EXIT_Y]
+        jae     80f
+        mov     r12d, G_EXIT
+        jmp     80f
+6:      vxorps  xmm5, xmm5, xmm5
+        vucomiss xmm2, xmm3
+        jbe     7f
+        vucomiss xmm2, [rip + T_SWIPE]          # horizontal
+        jb      80f
+        mov     r12d, G_SWL
+        vucomiss xmm0, xmm5
+        jb      80f
+        mov     r12d, G_SWR
+        jmp     80f
+7:      vucomiss xmm3, xmm2
+        jbe     80f
+        vucomiss xmm3, [rip + T_SWIPE]          # vertical (y grows downwards)
+        jb      80f
+        mov     r12d, G_SWU
+        vucomiss xmm1, xmm5
+        jb      80f
+        mov     r12d, G_SWD
+        jmp     80f
+
+20:     test    r12d, r12d              # down
+        jns     9f                      # already down
+        mov     edx, [rip + t_count]
+        cmp     edx, TMAX_FINGERS
+        jae     9f
+        mov     [r8 + rdx*8], rax
+        inc     edx
+        mov     [rip + t_count], edx
+        cmp     edx, 1
+        jne     21f
+        mov     [rip + t_first], rax    # first finger: a new gesture
+        mov     [rip + t_max], edx
+        mov     ecx, [rbx + 4]
+        mov     [rip + t_t0], ecx
+        mov     ecx, [rbx + 24]
+        mov     [rip + t_sx], ecx
+        mov     [rip + t_lx], ecx
+        mov     ecx, [rbx + 28]
+        mov     [rip + t_sy], ecx
+        mov     [rip + t_ly], ecx
+        jmp     9f
+21:     cmp     edx, [rip + t_max]
+        jbe     9f
+        mov     [rip + t_max], edx
+        jmp     9f
+
+30:     test    r12d, r12d              # motion
+        js      9f
+        call    t_track
+        jmp     9f
+
+80:     cmp     dword ptr [rip + opt_log], 0
+        je      81f
+        call    clock_now
+        lea     rdi, [rip + s_touch_log]
+        lea     rax, [rip + g_names]
+        mov     rsi, [rax + r12*8]
+        lea     rax, [rip + g_actions]
+        mov     rdx, [rax + r12*8]
+        mov     eax, 1
+        call    printf@PLT
+81:     lea     rax, [rip + g_keys]
+        movzx   edi, byte ptr [rax + r12]
+        test    edi, edi
+        jz      9f
+        call    on_key
+        mov     r13d, eax
+9:      mov     eax, r13d
+        pop     r13
+        pop     r12
+        pop     rbx
+        ret
+
+# on_touch helper: the first finger's position is the gesture's last one
+t_track:
+        mov     rax, [rbx + 16]
+        cmp     rax, [rip + t_first]
+        jne     1f
+        mov     eax, [rbx + 24]
+        mov     [rip + t_lx], eax
+        mov     eax, [rbx + 28]
+        mov     [rip + t_ly], eax
+1:      ret
+
+# --touches: parse rdi = "d0.5,0.5@0 m0.3,0.5@50#1 u..." into SDL finger
+# events and feed each to on_touch; eax = 1 if a gesture quit
+run_touches:
+        push    rbx
+        push    r12
+        push    r13
+        sub     rsp, 16                 # rsp aligned; [rsp] strto* end
+        mov     rbx, rdi
+1:      movzx   eax, byte ptr [rbx]
+        cmp     eax, ' '
+        jne     2f
+        inc     rbx
+        jmp     1b
+2:      xor     r13d, r13d
+        test    eax, eax
+        jz      9f
+        mov     ecx, SDL_FINGERDOWN
+        cmp     eax, 'd'
+        je      3f
+        mov     ecx, SDL_FINGERMOTION
+        cmp     eax, 'm'
+        je      3f
+        mov     ecx, SDL_FINGERUP
+        cmp     eax, 'u'
+        jne     8f
+3:      lea     r12, [rip + tev]
+        mov     [r12], ecx
+        mov     qword ptr [r12 + 8], 0  # touchId
+        mov     qword ptr [r12 + 16], 0 # fingerId
+        inc     rbx
+        mov     rdi, rbx                # x
+        mov     rsi, rsp
+        call    strtod@PLT
+        cmp     [rsp], rbx
+        je      8f
+        vcvtsd2ss xmm0, xmm0, xmm0
+        vmovss  [r12 + 24], xmm0
+        mov     rbx, [rsp]
+        cmp     byte ptr [rbx], ','
+        jne     8f
+        inc     rbx
+        mov     rdi, rbx                # y
+        mov     rsi, rsp
+        call    strtod@PLT
+        cmp     [rsp], rbx
+        je      8f
+        vcvtsd2ss xmm0, xmm0, xmm0
+        vmovss  [r12 + 28], xmm0
+        mov     rbx, [rsp]
+        cmp     byte ptr [rbx], '@'
+        jne     8f
+        inc     rbx
+        mov     rdi, rbx                # timestamp, ms
+        mov     rsi, rsp
+        mov     edx, 10
+        call    strtoull@PLT
+        cmp     [rsp], rbx
+        je      8f
+        mov     [r12 + 4], eax
+        mov     rbx, [rsp]
+        cmp     byte ptr [rbx], '#'
+        jne     4f
+        inc     rbx
+        mov     rdi, rbx                # fingerId
+        mov     rsi, rsp
+        mov     edx, 10
+        call    strtoull@PLT
+        cmp     [rsp], rbx
+        je      8f
+        mov     [r12 + 16], rax
+        mov     rbx, [rsp]
+4:      movzx   eax, byte ptr [rbx]
+        test    eax, eax
+        jz      5f
+        cmp     eax, ' '
+        jne     8f
+5:      mov     rdi, r12
+        call    on_touch
+        mov     r13d, eax
+        test    eax, eax
+        jz      1b
+9:      mov     eax, r13d
+        add     rsp, 16
+        pop     r13
+        pop     r12
+        pop     rbx
+        ret
+8:      lea     rdi, [rip + s_badtouch]
+        mov     rsi, rbx
+        call    die_arg
+
 window:
         push    rbx
         push    r12
@@ -1472,7 +1791,15 @@ window:
         mov     eax, [rip + event]
         cmp     eax, SDL_QUIT
         je      .Lquit
-        cmp     eax, SDL_KEYDOWN
+        lea     ecx, [eax - SDL_FINGERDOWN]
+        cmp     ecx, SDL_FINGERUP - SDL_FINGERDOWN
+        ja      1f
+        lea     rdi, [rip + event]          # finger down / motion / up
+        call    on_touch
+        test    eax, eax
+        jnz     .Lquit
+        jmp     .Lpoll
+1:      cmp     eax, SDL_KEYDOWN
         jne     .Lpoll
         mov     edi, [rip + event + 20]     # keysym.sym
         test    word ptr [rip + event + 24], KMOD_SHIFT
@@ -1931,8 +2258,18 @@ main:
         call    on_key
         inc     rbx
         jmp     50b
+        # --touches: the same for finger events through the gesture recogniser;
+        # a gesture that quits (the exit-corner tap) ends the program here
+51:     mov     rdi, [rip + opt_touches]
+        test    rdi, rdi
+        jz      53f
+        call    run_touches
+        test    eax, eax
+        jz      53f
+        xor     eax, eax
+        jmp     9f
 
-51:     cmp     dword ptr [rip + opt_bench], 0
+53:     cmp     dword ptr [rip + opt_bench], 0
         je      52f
         call    bench
         xor     eax, eax
