@@ -34,6 +34,9 @@
 .set SDL_TEXTUREACCESS_STREAMING, 1
 .set SDL_QUIT,              0x100
 .set SDL_KEYDOWN,           0x300
+.set SDL_FINGERDOWN,        0x700
+.set SDL_FINGERMOTION,      0x701
+.set SDL_FINGERUP,          0x702
 .set KMOD_SHIFT,            0x0003
 .set SDLK_KP_MINUS,         0x40000056
 .set SDLK_KP_PLUS,          0x40000057
@@ -52,7 +55,28 @@
 .set KEEP_PALETTE,          1
 .set KEEP_SPAWN,            2
 
+// Touch gestures (on_touch). A gesture starts with the first finger down
+// and ends when the last finger is up; travel is measured on the first
+// finger, in SDL's normalised coordinates (0..1 across the window), on its
+// larger axis; times are SDL event timestamps in ms. Tune here.
         .section .rodata
+        .balign 4
+T_TAP_MOVE:  .float 0.04             // tap / long press / two-finger tap: travel below this
+T_SWIPE:     .float 0.15             // swipe: travel on the dominant axis at least this
+T_EXIT_X:    .float 0.12             // exit corner (top left): x below this ...
+T_EXIT_Y:    .float 0.05             // ... and y below this, a short tap there quits
+T_LONG_MS:   .long 700               // long press: held at least this; a tap is shorter
+.set TMAX_FINGERS,          10
+// tstate: the recogniser's state
+.set TS_IDS,    0                    // finger ids down now (TMAX_FINGERS x 8)
+.set TS_FIRST,  80                   // id of the gesture's first finger
+.set TS_COUNT,  88                   // fingers down now
+.set TS_MAX,    92                   // most fingers down at once in this gesture
+.set TS_T0,     96                   // timestamp of the first finger down
+.set TS_SX,     100                  // first finger: start x, y (pair)
+.set TS_LX,     108                  // first finger: last x, y (pair)
+.set TS_SIZE,   120
+
 s_particles: .asciz "--particles"
 s_types:     .asciz "--types"
 s_seed:      .asciz "--seed"
@@ -68,6 +92,7 @@ s_spf:       .asciz "--steps-per-frame"
 s_novsync:   .asciz "--no-vsync"
 s_cdiv:      .asciz "--cell-div"
 s_keys:      .asciz "--keys"
+s_touches:   .asciz "--touches"
 s_preset:    .asciz "--preset"
 s_interval:  .asciz "--interval"
 s_mutate:    .asciz "--mutate"
@@ -98,6 +123,40 @@ s_r_pool:    .asciz "pool"
 s_r_spawn:   .asciz "spawn"
 s_r_respawn: .asciz "respawn"
 s_r_palette: .asciz "palette"
+s_touch_log: .asciz "%9.3f s  touch: %s -> %s\n"
+s_badtouch:  .asciz "bad --touches event at '%s' (want d|m|u X,Y@MS[#ID])\n"
+// gestures: name, action (the log) and the key on_key runs (0 = none)
+s_g_tap:     .asciz "tap"
+s_g_long:    .asciz "long-press"
+s_g_swl:     .asciz "swipe-left"
+s_g_swr:     .asciz "swipe-right"
+s_g_swu:     .asciz "swipe-up"
+s_g_swd:     .asciz "swipe-down"
+s_g_two:     .asciz "two-finger-tap"
+s_g_exit:    .asciz "exit-tap"
+s_g_none:    .asciz "unrecognised"
+s_g_stray:   .asciz "stray-up"
+s_a_tap:     .asciz "next-scene"
+s_a_long:    .asciz "reroll"
+s_a_swl:     .asciz "next-preset"
+s_a_swr:     .asciz "prev-preset"
+s_a_swu:     .asciz "next-palette"
+s_a_swd:     .asciz "overlay"
+s_a_two:     .asciz "pause"
+s_a_exit:    .asciz "quit"
+s_a_none:    .asciz "none"
+s_a_stray:   .asciz "ignored"
+g_keys:      .byte ' ', 'r', '>', '<', 'k', 'f', 'z', 27, 0, 0
+.set G_TAP, 0
+.set G_LONG, 1
+.set G_SWL, 2
+.set G_SWR, 3
+.set G_SWU, 4
+.set G_SWD, 5
+.set G_TWO, 6
+.set G_EXIT, 7
+.set G_NONE, 8
+.set G_STRAY, 9
 s_switch:    .asciz "%9.3f s  %-6s -> %2u %-13s %-9s K=%-2u spawn %-13s palette %-22s %6.2f ms  maxr %.1f grid %ux%u force %.2f fric %.2f core %.2f\n"
 s_ev_log:    .asciz "%9.3f s  %-7s -> spawn %-13s palette %-22s K=%u\n"
 s_mut_log:   .asciz "%9.3f s  mutate %u rule value(s)\n"
@@ -160,9 +219,13 @@ s_usage:     .ascii "usage: particle_life [--particles N] [--types K(1-16), pins
              .ascii "         [--log-switches]\n"
              .ascii "         [--keys STR]  feed key presses (e.g. \"r9+\") to the key handler first;\n"
              .ascii "                       '>' '<' = Right Left, 'S' = Shift+S\n"
+             .ascii "         [--touches STR] feed finger events to the gesture recogniser first,\n"
+             .ascii "                       e.g. \"d0.5,0.5@0 u0.5,0.5@100\" (d/m/u X,Y@MS[#FINGER])\n"
              .ascii "keys: Space next scene, Z/Return pause, Right/Left next/previous preset, P pool, C auto-cycle,\n"
              .ascii "      R re-roll, S/Shift+S next/previous spawn, N respawn, K palette,\n"
              .ascii "      [ ] fewer/more types, 1-9 types, +/- particles, F overlay, Esc quit\n"
+             .ascii "touch: tap next scene, long press re-roll, swipe left/right next/previous preset,\n"
+             .ascii "      swipe up palette, swipe down overlay, two-finger tap pause, tap top-left corner quit\n"
              .byte 0
 s_noneon:    .asciz "error: this program needs Advanced SIMD (NEON)\n"
 s_badrot:    .asciz "error: --rotate takes 0, 90, 180 or 270; rotation needs --present texture\n"
@@ -191,6 +254,8 @@ F_CORE:      .float 0.6
 // 4 = double
         .section .data.rel.ro, "aw"
         .balign 8
+g_names:     .quad s_g_tap, s_g_long, s_g_swl, s_g_swr, s_g_swu, s_g_swd, s_g_two, s_g_exit, s_g_none, s_g_stray
+g_actions:   .quad s_a_tap, s_a_long, s_a_swl, s_a_swr, s_a_swu, s_a_swd, s_a_two, s_a_exit, s_a_none, s_a_stray
 opts:
         .quad s_particles, opt_n,       0
         .quad s_types,     opt_k,       0
@@ -207,6 +272,7 @@ opts:
         .quad s_novsync,   opt_novsync, 3
         .quad s_cdiv,      opt_cdiv,    0
         .quad s_keys,      opt_keys,    2
+        .quad s_touches,   opt_touches, 2
         .quad s_preset,    opt_preset,  2
         .quad s_interval,  opt_interval, 4
         .quad s_mutate,    opt_mutate,  4
@@ -234,6 +300,7 @@ opt_seed:    .quad -1                // -1 = not given: 1, or the clock for the 
 opt_simd:    .quad 0
 opt_dump:    .quad 0
 opt_keys:    .quad 0
+opt_touches: .quad 0
 opt_preset:  .quad 0
 opt_pool:    .quad 0
 opt_spawn:   .quad 0
@@ -298,6 +365,8 @@ g_pr:        .skip 8                // last measured present ms per frame
 angle:       .skip 8                // rotation in degrees (double)
 cbuf:        .skip 48
 kbuf:        .skip 64
+tev:         .skip 48               // an SDL_TouchFingerEvent built by --touches
+tstate:      .skip TS_SIZE
 
         .text
 
@@ -1408,6 +1477,249 @@ on_key:
 .set W_TFL, 96
 .set W_FRAME, 112
 
+// feed one SDL_TouchFingerEvent (x0) to the gesture recogniser; when the
+// last finger lifts, classify the gesture, log it and run its key through
+// on_key. Returns w0 = 1 to quit.
+on_touch:
+        ENTER4
+        mov     x19, x0
+        mov     w21, #0
+        ADR_L   x20, tstate
+        ldr     x9, [x19, #8]
+        cmn     x9, #1                          // SDL_TOUCH_MOUSEID: touch made up from the mouse
+        b.eq    9f
+        ldr     x10, [x19, #16]                 // fingerId
+        ldr     w11, [x20, #TS_COUNT]
+        mov     w22, #0
+1:      cmp     w22, w11
+        b.hs    2f
+        ldr     x12, [x20, w22, uxtw #3]
+        cmp     x10, x12
+        b.eq    3f
+        add     w22, w22, #1
+        b       1b
+2:      mov     w22, #-1                        // w22 = its slot, -1 = not down
+3:      ldr     w9, [x19]
+        mov     w12, #SDL_FINGERDOWN
+        cmp     w9, w12
+        b.eq    20f
+        add     w12, w12, #1
+        cmp     w9, w12
+        b.eq    30f
+        add     w12, w12, #1
+        cmp     w9, w12
+        b.ne    9f
+        tbz     w22, #31, 4f                    // up
+        mov     w22, #G_STRAY                   // up without down
+        b       80f
+4:      bl      t_track
+        ldr     w11, [x20, #TS_COUNT]
+        sub     w11, w11, #1
+        str     w11, [x20, #TS_COUNT]
+        ldr     x12, [x20, w11, uxtw #3]        // last slot into the freed one
+        str     x12, [x20, w22, uxtw #3]
+        cbnz    w11, 9f
+        // the gesture is over
+        ldp     s0, s1, [x20, #TS_LX]
+        ldp     s2, s3, [x20, #TS_SX]
+        fsub    s0, s0, s2                      // dx
+        fsub    s1, s1, s3                      // dy
+        fabs    s2, s0
+        fabs    s3, s1
+        fmax    s4, s2, s3                      // travel
+        ldr     w9, [x19, #4]
+        ldr     w10, [x20, #TS_T0]
+        sub     w9, w9, w10                     // held, ms
+        LDW     w10, T_LONG_MS
+        LDRS    s5, T_TAP_MOVE, x16
+        mov     w22, #G_NONE
+        ldr     w11, [x20, #TS_MAX]
+        cmp     w11, #1
+        b.eq    5f
+        fcmp    s4, s5                          // two or more fingers
+        b.ge    80f
+        cmp     w9, w10
+        b.hs    80f
+        mov     w22, #G_TWO
+        b       80f
+5:      fcmp    s4, s5
+        b.ge    6f
+        mov     w22, #G_LONG
+        cmp     w9, w10
+        b.hs    80f
+        mov     w22, #G_TAP
+        LDRS    s5, T_EXIT_X, x16
+        ldr     s6, [x20, #TS_SX]
+        fcmp    s6, s5
+        b.ge    80f
+        LDRS    s5, T_EXIT_Y, x16
+        ldr     s6, [x20, #TS_SX + 4]
+        fcmp    s6, s5
+        b.ge    80f
+        mov     w22, #G_EXIT
+        b       80f
+6:      LDRS    s5, T_SWIPE, x16
+        fcmp    s2, s3
+        b.le    7f
+        fcmp    s2, s5                          // horizontal
+        b.lt    80f
+        mov     w22, #G_SWL
+        fcmp    s0, #0.0
+        b.lt    80f
+        mov     w22, #G_SWR
+        b       80f
+7:      fcmp    s3, s2
+        b.le    80f
+        fcmp    s3, s5                          // vertical (y grows downwards)
+        b.lt    80f
+        mov     w22, #G_SWU
+        fcmp    s1, #0.0
+        b.lt    80f
+        mov     w22, #G_SWD
+        b       80f
+
+20:     tbz     w22, #31, 9f                    // down; already down
+        ldr     w11, [x20, #TS_COUNT]
+        cmp     w11, #TMAX_FINGERS
+        b.hs    9f
+        str     x10, [x20, w11, uxtw #3]
+        add     w11, w11, #1
+        str     w11, [x20, #TS_COUNT]
+        cmp     w11, #1
+        b.ne    21f
+        str     x10, [x20, #TS_FIRST]           // first finger: a new gesture
+        str     w11, [x20, #TS_MAX]
+        ldr     w9, [x19, #4]
+        str     w9, [x20, #TS_T0]
+        ldp     w9, w10, [x19, #24]
+        stp     w9, w10, [x20, #TS_SX]
+        stp     w9, w10, [x20, #TS_LX]
+        b       9f
+21:     ldr     w9, [x20, #TS_MAX]
+        cmp     w11, w9
+        b.ls    9f
+        str     w11, [x20, #TS_MAX]
+        b       9f
+
+30:     tbnz    w22, #31, 9f                    // motion
+        bl      t_track
+        b       9f
+
+80:     LDW     w9, opt_log
+        cbz     w9, 81f
+        bl      clock_now
+        ADR_L   x9, g_names
+        ldr     x1, [x9, w22, uxtw #3]
+        ADR_L   x9, g_actions
+        ldr     x2, [x9, w22, uxtw #3]
+        ADR_L   x0, s_touch_log
+        bl      printf
+81:     ADR_L   x9, g_keys
+        ldrb    w0, [x9, w22, uxtw]
+        cbz     w0, 9f
+        bl      on_key
+        mov     w21, w0
+9:      mov     w0, w21
+        LEAVE4
+
+// on_touch helper (x19 = event, x20 = tstate): the first finger's position
+// is the gesture's last one
+t_track:
+        ldr     x9, [x19, #16]
+        ldr     x10, [x20, #TS_FIRST]
+        cmp     x9, x10
+        b.ne    1f
+        ldp     w9, w10, [x19, #24]
+        stp     w9, w10, [x20, #TS_LX]
+1:      ret
+
+// --touches: parse x0 = "d0.5,0.5@0 m0.3,0.5@50#1 u..." into SDL finger
+// events and feed each to on_touch; w0 = 1 if a gesture quit
+run_touches:
+        ENTER   16                              // [sp] strto* end
+        mov     x19, x0
+        ADR_L   x20, tev
+1:      ldrb    w9, [x19]
+        cmp     w9, #' '
+        b.ne    2f
+        add     x19, x19, #1
+        b       1b
+2:      mov     w21, #0
+        cbz     w9, 9f
+        mov     w10, #SDL_FINGERDOWN
+        cmp     w9, #'d'
+        b.eq    3f
+        add     w10, w10, #1
+        cmp     w9, #'m'
+        b.eq    3f
+        add     w10, w10, #1
+        cmp     w9, #'u'
+        b.ne    8f
+3:      str     w10, [x20]
+        stp     xzr, xzr, [x20, #8]             // touchId, fingerId
+        add     x19, x19, #1
+        mov     x0, x19                         // x
+        mov     x1, sp
+        bl      strtod
+        ldr     x9, [sp]
+        cmp     x9, x19
+        b.eq    8f
+        fcvt    s0, d0
+        str     s0, [x20, #24]
+        mov     x19, x9
+        ldrb    w9, [x19]
+        cmp     w9, #','
+        b.ne    8f
+        add     x19, x19, #1
+        mov     x0, x19                         // y
+        mov     x1, sp
+        bl      strtod
+        ldr     x9, [sp]
+        cmp     x9, x19
+        b.eq    8f
+        fcvt    s0, d0
+        str     s0, [x20, #28]
+        mov     x19, x9
+        ldrb    w9, [x19]
+        cmp     w9, #'@'
+        b.ne    8f
+        add     x19, x19, #1
+        mov     x0, x19                         // timestamp, ms
+        mov     x1, sp
+        mov     w2, #10
+        bl      strtoull
+        ldr     x9, [sp]
+        cmp     x9, x19
+        b.eq    8f
+        str     w0, [x20, #4]
+        mov     x19, x9
+        ldrb    w9, [x19]
+        cmp     w9, #'#'
+        b.ne    4f
+        add     x19, x19, #1
+        mov     x0, x19                         // fingerId
+        mov     x1, sp
+        mov     w2, #10
+        bl      strtoull
+        ldr     x9, [sp]
+        cmp     x9, x19
+        b.eq    8f
+        str     x0, [x20, #16]
+        mov     x19, x9
+4:      ldrb    w9, [x19]
+        cbz     w9, 5f
+        cmp     w9, #' '
+        b.ne    8f
+5:      mov     x0, x20
+        bl      on_touch
+        mov     w21, w0
+        cbz     w0, 1b
+9:      mov     w0, w21
+        LEAVE   16
+8:      ADR_L   x0, s_badtouch
+        mov     x1, x19
+        bl      die_arg
+
 window:
         ENTER   W_FRAME
         mov     w0, #SDL_INIT_VIDEO
@@ -1518,7 +1830,14 @@ window:
         ldr     w10, [x9]
         cmp     w10, #SDL_QUIT
         b.eq    .Lquit
-        cmp     w10, #SDL_KEYDOWN
+        sub     w11, w10, #SDL_FINGERDOWN
+        cmp     w11, #SDL_FINGERUP - SDL_FINGERDOWN
+        b.hi    1f
+        mov     x0, x9                          // finger down / motion / up
+        bl      on_touch
+        cbnz    w0, .Lquit
+        b       .Lpoll
+1:      cmp     w10, #SDL_KEYDOWN
         b.ne    .Lpoll
         ldr     w0, [x9, #20]                   // keysym.sym
         ldrh    w10, [x9, #24]                  // keysym.mod
@@ -2145,8 +2464,16 @@ main:
         bl      on_key
         add     x19, x19, #1
         b       50b
+        // --touches: the same for finger events through the gesture recogniser;
+        // a gesture that quits (the exit-corner tap) ends the program here
+51:     LDRS    x0, opt_touches, x9
+        cbz     x0, 53f
+        bl      run_touches
+        cbz     w0, 53f
+        mov     w0, #0
+        b       9f
 
-51:     LDW     w9, opt_bench
+53:     LDW     w9, opt_bench
         cbz     w9, 52f
         bl      bench
         mov     w0, #0
