@@ -143,7 +143,7 @@ s_nomem:     .asciz "error: out of memory\n"
 s_sdlerr:    .asciz "SDL error: %s\n"
 s_bench_hdr: .asciz "asm   simd=%s threads=%u particles=%u types=%u world=%ux%u cell-div=%u steps=%u (after %u warmup)\n"
 s_bench_res: .asciz "      %.1f steps/s  %.3f ms/step  %.2f ns/particle-step\n"
-s_benchr_res:.asciz "render %ux%u, %u particles, %u frames: %.3f ms/frame without overlay, %.3f ms/frame with overlay (+%.3f ms)\n"
+s_benchr_res:.asciz "render %ux%u, %u particles, %u frames: %.3f ms/frame without overlay, %.3f ms/frame with overlay; overlay alone (text + drawing) %.4f ms/frame\n"
 s_dumped:    .asciz "wrote %s (%ux%u, after %u steps, %u particles, %u types, %s, spawn %s, palette %s)\n"
 s_dumpfail:  .asciz "error: could not write %s\n"
         .balign 8
@@ -927,8 +927,9 @@ bench:
         pop     rbx
         ret
 
-# --bench-render N: N frames of pl_render alone, then N frames of pl_render
-# plus the overlay (text built and drawn every frame, as in the window)
+# --bench-render N: N frames of pl_render alone, N frames of pl_render plus
+# the overlay (text built and drawn every frame, as in the window), and N
+# times the overlay alone
 bench_render:
         push    rbx
         push    r12
@@ -971,13 +972,28 @@ bench_render:
         jmp     3b
 4:      call    now
         vsubsd  xmm1, xmm0, [rsp]
-        vcvtsi2sd xmm2, xmm2, dword ptr [rip + opt_benchr]
+        vmovsd  [rsp + 16], xmm1
+        vmovsd  [rsp], xmm0
+        mov     ebx, [rip + opt_benchr]  # the overlay alone: text + drawing
+5:      test    ebx, ebx
+        jz      6f
+        call    cycle_text
+        call    overlay_text
+        mov     rdi, r12
+        call    draw_overlay
+        dec     ebx
+        jmp     5b
+6:      call    now
+        vsubsd  xmm2, xmm0, [rsp]
+        vcvtsi2sd xmm3, xmm3, dword ptr [rip + opt_benchr]
         vmovsd  xmm0, [rsp + 8]
-        vdivsd  xmm0, xmm0, xmm2
+        vdivsd  xmm0, xmm0, xmm3
         vmulsd  xmm0, xmm0, [rip + D_1E3]
-        vdivsd  xmm1, xmm1, xmm2
+        vmovsd  xmm1, [rsp + 16]
+        vdivsd  xmm1, xmm1, xmm3
         vmulsd  xmm1, xmm1, [rip + D_1E3]
-        vsubsd  xmm2, xmm1, xmm0
+        vdivsd  xmm2, xmm2, xmm3
+        vmulsd  xmm2, xmm2, [rip + D_1E3]
         lea     rdi, [rip + s_benchr_res]
         mov     esi, [rip + opt_w]
         mov     edx, [rip + opt_h]
