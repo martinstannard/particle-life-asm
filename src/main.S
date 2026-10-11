@@ -67,6 +67,7 @@ s_overlay:   .asciz "--overlay"
 s_benchr:    .asciz "--bench-render"
 s_r_start:   .asciz "start"
 s_r_timer:   .asciz "timer"
+s_r_space:   .asciz "space"
 s_r_next:    .asciz "next"
 s_r_prev:    .asciz "prev"
 s_r_reroll:  .asciz "reroll"
@@ -133,7 +134,7 @@ s_usage:     .ascii "usage: particle_life [--particles N] [--types K(1-16), pins
              .ascii "         [--log-switches]\n"
              .ascii "         [--keys STR]  feed key presses (e.g. \"r9+\") to the key handler first;\n"
              .ascii "                       '>' '<' = Right Left, 'S' = Shift+S\n"
-             .ascii "keys: Space pause, Right/Left next/previous preset, P pool, C auto-cycle,\n"
+             .ascii "keys: Space next scene, Z/Return pause, Right/Left next/previous preset, P pool, C auto-cycle,\n"
              .ascii "      R re-roll, S/Shift+S next/previous spawn, N respawn, K palette,\n"
              .ascii "      [ ] fewer/more types, 1-9 types, +/- particles, F overlay, Esc quit\n"
              .byte 0
@@ -1159,9 +1160,20 @@ on_key:
         jne     1f
         mov     eax, 1
         jmp     99f
-1:      cmp     ebx, ' '
+1:      cmp     ebx, ' '                # next scene: same pick as the timer
+        jne     12f
+        call    pl_preset_pick
+        mov     edi, eax
+        lea     rsi, [rip + s_r_space]
+        xor     edx, edx
+        xor     ecx, ecx
+        call    switch_to
+        jmp     98f
+12:     cmp     ebx, 'z'                # pause (Z or Return)
+        je      13f
+        cmp     ebx, 13
         jne     2f
-        xor     dword ptr [rip + paused], 1
+13:     xor     dword ptr [rip + paused], 1
         jmp     98f
 2:      cmp     ebx, 'r'                # re-roll: same preset and K, new draws
         jne     3f

@@ -94,7 +94,8 @@ particle_life [--particles N] [--seed S] [--width W] [--height H]
 | `+` / `-` | particle count ×5/4 / ×4/5 (respawn, same layout) |
 | C | auto-cycle on/off |
 | F | overlay on/off (default on) |
-| Space | pause (also holds the countdown) |
+| Space | next scene now (a new preset, spawn and palette, as the timer would pick; restarts the countdown) |
+| Z / Return | pause (also holds the countdown) |
 | Esc | quit |
 
 `[`, `]`, 1–9 and S change the current scene only: the next automatic
