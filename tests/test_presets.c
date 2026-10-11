@@ -8,11 +8,18 @@
  *     outside, 0 < minr < maxr within the preset's ranges, physics copied, and
  *     all derived tables, the max radius and the grid equal what the C
  *     reference derives from the same rules;
- *  3. shuffle bag: no preset twice in a row, none twice within a round;
+ *  3. shuffle bag over the 48 entries (17 curated + 31 generated) for each
+ *     pool: only entries of the pool, never the current one again, none
+ *     twice within a round; curated entries install their own type count;
  *  4. after a switch, the asm and the C reference loaded with the NEW rules
  *     from the same state agree step by step (and a reference holding the
  *     OLD rules does not, so a stale matrix would be caught);
- *  5. A -> B -> A with the same seed reproduces A's steps bit for bit.
+ *  5. A -> B -> A with the same seed reproduces A's steps bit for bit;
+ *  6. scene switches over K = 2..16: preset entry, type count, spawn layout
+ *     and palette change together; after each, the asm agrees with the C
+ *     reference loaded from the new state, a reference holding the previous
+ *     preset's rules (regenerated for the new K) is caught as stale, the
+ *     kernel variant follows K, and the palette has K distinct colours.
  */
 #include "../ref/pl_state.h"
 #include "../ref/ref.h"
@@ -145,7 +152,6 @@ static int test_ranges(void)
             setup(k, 1000.0f + 37.0f * k, 700.0f, 1 + (k & 1), 2 - !(feat & 2), 1);
             pl.rng = 100 + p * 16 + k;
             pl_preset_rules(p);
-            if (pl_preset_cur != p) bad++;
             if (pl.fscale != ph[0] || pl.fric != ph[1] || pl.core != ph[2]) bad++;
             float gmax = 0.0f;
             for (int i = 0; i < 16; i++)
@@ -187,29 +193,57 @@ static int test_ranges(void)
 /* ------------------------------------------------------------ 3. shuffle bag */
 static int test_bag(void)
 {
+    static const char *pools[] = { "curated", "generated", "all" };
+    static const uint64_t masks[] = { (1ull << 17) - 1, ((1ull << 48) - 1) & ~((1ull << 17) - 1),
+                                      (1ull << 48) - 1 };
+    int fails = 0;
     setup(5, 400, 300, 2, 2 - !(feat & 2), 1);
-    pl.rng = 77;
     if (pl_alloc(200)) return 1;
-    pl_preset_cur = -1;
-    pl_preset_shown = 0;
-    uint32_t seen = 0;
-    int prev = -1, rounds = 0, fails = 0, picks = 0;
-    const uint32_t all = (1u << PL_NPRESETS) - 1;
-    for (; picks < PL_NPRESETS * 20; picks++) {
-        uint32_t p = pl_preset_pick();
-        if (p >= PL_NPRESETS || (int)p == prev || (seen >> p & 1)) {
-            printf("  pick %d: %u (prev %d, seen %08x)  FAIL\n", picks, p, prev, seen);
-            fails++;
-            break;
+    for (int pool = 0; pool < 3; pool++) {
+        pl.rng = 77 + pool;
+        pl_pool_set(pool);
+        pl_preset_cur = -1;
+        pl_preset_shown = 0;
+        uint64_t seen = 0, all = masks[pool];
+        int n = __builtin_popcountll(all);
+        int prev = -1, rounds = 0, bad = 0, picks, kbad = 0;
+        for (picks = 0; picks < n * 20; picks++) {
+            uint32_t e = pl_preset_pick();
+            if (e >= PL_NENTRIES || !(all >> e & 1) || (int)e == prev || (seen >> e & 1)) {
+                printf("  %s pick %d: %u (prev %d, seen %012llx)  FAIL\n", pools[pool], picks, e, prev,
+                       (unsigned long long)seen);
+                bad = 1;
+                break;
+            }
+            uint32_t k = pl_entry_types(e);
+            if (!k) k = pl_types_draw();
+            pl_entry_install(e, k);
+            if (pl.k != k || (e < PL_NCURATED && k != pl_curated[e][1]) || k < 2 || k > 16 ||
+                pl_preset_cur != (int)e)
+                kbad++;
+            seen |= 1ull << e;
+            prev = e;
+            if (seen == all) { rounds++; seen = 1ull << e; }
         }
-        pl_preset_apply(p);
-        seen |= 1u << p;
-        prev = p;
-        if (seen == all) { rounds++; seen = 1u << p; }
+        printf("  pool %-9s %2d entries, %d picks: only pool entries, never the current one, each once per round, %d full rounds; K %s  %s\n",
+               pools[pool], n, picks, rounds,
+               pool == 1 ? "drawn 2..16" : (pool == 0 ? "= the curated count" : "curated count / drawn"),
+               bad || kbad ? "FAIL" : "OK");
+        fails += bad || kbad;
     }
-    printf("  %d picks: never the current preset, each preset once per round, %d full rounds  %s\n",
-           picks, rounds, fails ? "FAIL" : "OK");
-    return fails;
+    pl_pool_set(0);
+    /* names */
+    int f = 0;
+    if (pl_entry_find("SkipPursuit") != 0 || pl_entry_find("g:SkipPursuit") != 17 + 24 ||
+        pl_entry_find("c:Snake") != -1 || pl_entry_find("Snake") != 17 + 2 ||
+        pl_entry_find("bipartite") != 16 || pl_entry_find("nope") != -1)
+        f = 1;
+    pl_pool_set(1);
+    if (pl_entry_find("SkipPursuit") != 17 + 24 || pl_entry_find("c:SkipPursuit") != 0) f = 1;
+    pl_pool_set(0);
+    printf("  entry lookup (curated first, g:/c: prefixes, generated first in the generated pool)  %s\n",
+           f ? "FAIL" : "OK");
+    return fails + f;
 }
 
 /* ------------------------------------------------------------ 4. switch vs reference */
@@ -327,6 +361,94 @@ static int test_aba(int n, int k, int simd, int threads, int pa, int pb, uint64_
     return !same;
 }
 
+/* ------------------------------------------------------------ 6. scenes, K = 2..16 */
+static int test_scenes(int simd, int threads)
+{
+    int fails = 0;
+    const int n = 6000;
+    setup(8, 1100, 700, 2, simd, threads);
+    pl.rng = 2024 + simd * 7 + threads;
+    if (pl_alloc(n)) return 1;
+    pl_pool_set(2);
+    pl_preset_shown = 0;
+    pl_entry_install(0, 7);  /* SkipPursuit, curated K = 7 */
+    pl_spawn(5);
+    pl_palette_set(0);
+    for (int k = 2; k <= 16; k++) {
+        for (int s = 0; s < 10; s++) pl_step();
+        int old_rule = pl_entry_rule(pl_preset_cur);
+        /* the next scene: a generated entry (cycling the rule generators)
+           with this K, a spawn layout and a palette pick */
+        uint32_t e = 17 + (uint32_t)((k * 7 + 3) % 31);
+        if (pl_entry_rule(e) == (uint32_t)old_rule) e = 17 + (e - 17 + 1) % 31;
+        uint32_t layout = (uint32_t)(k * 5) % PL_NSPAWNS;
+        /* not pl-box's star: it puts all N particles within 1 px of the
+           centre, where float summation order alone separates asm and
+           reference (an ulp at d = minr flips the force); pie instead */
+        if (!strcmp(pl_spawn_names[layout], "star")) layout = 0;
+        /* stale reference: the previous preset's rules regenerated for the
+           new K, from a copy of the RNG state (so the switch is unaffected) */
+        uint64_t rng = pl.rng;
+        pl.k = k;
+        pl_preset_rules(old_rule);
+        float oa[256], omn[256], omx[256], of[3] = { pl.fric, pl.fscale, pl.core };
+        memcpy(oa, pl.attr, sizeof oa); memcpy(omn, pl.minr, sizeof omn); memcpy(omx, pl.maxr_t, sizeof omx);
+        pl.rng = rng;
+        int old_pal = pl_palette_cur;
+        /* the switch */
+        pl_entry_install(e, k);
+        pl_spawn(layout);
+        uint32_t pal = pl_palette_pick();
+        pl_palette_set(pal);
+        int bad = 0;
+        /* rules: fresh K x K matrix of the new generator, zero outside */
+        float want[256];
+        pl_preset_attraction(pl_entry_rule(e), k, want);
+        for (int i = 0; i < 16; i++)
+            for (int j = 0; j < 16; j++) {
+                float a = pl.attr[i * 16 + j];
+                if (i >= k || j >= k) { if (a != 0 || pl.minr[i * 16 + j] != 0) bad |= 1; continue; }
+                float w = fmaxf(-1.0f, fminf(1.0f, want[i * 16 + j]));
+                if (pl_entry_rule(e) >= 2 && a != w) bad |= 1;
+            }
+        /* kernel variant follows K */
+        extern char pl_kernel_avx2_k8[], pl_kernel_avx2_k16[], pl_kernel_avx512[];
+        void *kexp = simd == 2 ? (void *)pl_kernel_avx512 : (k <= 8 ? (void *)pl_kernel_avx2_k8 : (void *)pl_kernel_avx2_k16);
+        if (pl.kernel != kexp) bad |= 2;
+        /* particles: N, types < K */
+        for (uint32_t i = 0; i < pl.n; i++) if ((uint32_t)pl.t[i] >= (uint32_t)k) bad |= 4;
+        /* palette: K colours as built, distinct, different palette */
+        uint32_t cols[16];
+        pl_palette_build(pal, k, cols);
+        for (int i = 0; i < k; i++) if (cols[i] != pl_colors[i]) bad |= 8;
+        int distinct = pl_palette_ok(pal, k);
+        if (!distinct || (int)pal == old_pal) bad |= 8;
+        /* asm vs reference (new rules) and vs stale reference */
+        ref_sim r, st;
+        ref_load(&r, n, k, pl.w, pl.h, pl.cdiv, pl.dt, pl.fric, pl.fscale, pl.core, pl.attr, pl.minr,
+                 pl.maxr_t, pl.x, pl.y, pl.vx, pl.vy, pl.t, pl.id);
+        ref_load(&st, n, k, pl.w, pl.h, pl.cdiv, pl.dt, of[0], of[1], of[2], oa, omn, omx,
+                 pl.x, pl.y, pl.vx, pl.vy, pl.t, pl.id);
+        if (pl.cols != (uint32_t)r.cols || pl.rows != (uint32_t)r.rows || pl.maxr != r.gmaxr) bad |= 16;
+        float eg = 0, es = 0;
+        for (int s = 0; s < 25; s++) {
+            pl_step(); ref_step(&r); ref_step(&st);
+            eg = fmaxf(eg, compare(&r)); es = fmaxf(es, compare(&st));
+        }
+        int og = outliers(&r), os = outliers(&st);
+        if (eg > 0.05f || og > n / 1000) bad |= 32;
+        if (os <= n / 10) bad |= 64;
+        printf("  K=%-2d %-13s spawn %-13s palette %-24s %s threads=%u grid %ux%u: ref max %.1e px (%d > %.0e), stale ref %4d/%d off  %s\n",
+               k, pl_entry_name(e), pl_spawn_names[layout], pl_palette_names[pal],
+               simd == 2 ? "avx512  " : (k <= 8 ? "avx2-k8 " : "avx2-k16"), pl.nthreads, pl.cols, pl.rows,
+               eg, og, TOL, os, n, bad ? "FAIL" : "OK");
+        if (bad) printf("     failure bits %#x (1 rules, 2 kernel, 4 types, 8 palette, 16 grid, 32 ref, 64 stale)\n", bad);
+        fails += bad != 0;
+    }
+    pl_pool_set(0);
+    return fails;
+}
+
 int main(int argc, char **argv)
 {
     feat = pl_cpu_features();
@@ -365,6 +487,10 @@ int main(int argc, char **argv)
     }
     fails += test_switch(20000, 7, 1920, 1080, simd, 8, 21, 24, 20); /* Helical -> SkipPursuit, 8 threads */
     fails += test_switch(20000, 9, 1920, 1080, 1, 8, 24, 0, 20);     /* SkipPursuit -> Random, 8 threads */
+
+    puts("--- scene switches over K = 2..16 (preset, type count, spawn, palette) vs C reference");
+    fails += test_scenes(1, 1);
+    if (feat & 2) fails += test_scenes(2, 8);
 
     puts("--- A -> B -> A with the same seed");
     fails += test_aba(5000, 6, simd, 1, 9, 11, 99);     /* Shells -> Checker -> Shells */

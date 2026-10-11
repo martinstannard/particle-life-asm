@@ -1,6 +1,12 @@
 # Rule presets ported from pl-box (crates/pl-core/src/rules.rs, RulePreset),
-# their physics (crates/pl-core/src/presets.rs, CURATED), and the shuffle bag
-# used to cycle through them.
+# their physics and pl-box's curated list (crates/pl-core/src/presets.rs,
+# CURATED), and the shuffle bag used to cycle through them.
+#
+# Presets ("entries") are numbered 0..47: 0..16 are pl-box's CURATED
+# configurations in its order (rule generator + type count + tuned physics),
+# 17..47 are the 31 generated RulePresets (rule = entry - 17), which get a
+# type count drawn per switch. A pool (curated, generated or all) is a bit
+# mask over the entries; the shuffle bag picks within it.
 #
 # Every generator is pointwise: attraction[i][j] depends only on (i, j, K)
 # (Symmetric reads back the mirrored entry it already produced, Random and
@@ -15,6 +21,8 @@
         .include "layout.inc"
 
 .set NPRESETS, 31
+.set NCURATED, 17
+.set NENTRIES, 48
 
         .section .rodata
         .balign 16
@@ -156,8 +164,42 @@ pl_preset_phys:
         CFG 0.4         # VortexLattice
         CFG 0.5         # DriftPatch
 
+# pl-box CURATED: rule, num_types, speed (sub-steps per frame in pl-box;
+# kept for reference, not used: the window has --steps-per-frame).
+# Physics come from pl_preset_phys[rule], which holds these presets' cfg /
+# cfg_fric / flow values.
+        .globl pl_curated
+pl_curated:
+        .byte 24, 7, 3          # SkippedPursuit     flowing maze / coral
+        .byte 14, 7, 3          # SpiralConveyor     labyrinth streams
+        .byte 20, 8, 3          # ParityVortex       striped rotating segments
+        .byte  9, 7, 2          # ConcentricShells   directional shells/rings
+        .byte  8, 7, 2          # HubAndSpokes       hub-directed flows
+        .byte 29, 8, 4          # VortexAntivortex   (friction 0.4)
+        .byte 30, 8, 3          # DriftedPatchwork   (friction 0.5)
+        .byte  0, 8, 3          # Random             fully-asymmetric wildcard
+        .byte 10, 8, 4          # AntiSymmetricSwirl flow physics
+        .byte 17, 8, 4          # ChiralBandpass     flow
+        .byte 16, 8, 3          # Wavefield          flow
+        .byte 26, 8, 3          # OffsetPhasefield   flow
+        .byte 28, 8, 4          # TriSpiral          flow
+        .byte 23, 8, 3          # ModularTriads      flow
+        .byte 13, 9, 2          # TriadFlocks        symmetric cell-formers
+        .byte 12, 8, 2
+        .byte  7, 8, 1          # Bipartite
+s_pool_c: .asciz "curated"
+s_pool_g: .asciz "generated"
+s_pool_a: .asciz "all"
+
         .section .data.rel.ro, "aw"
         .balign 8
+        .globl pl_pool_names
+pl_pool_names:
+        .quad s_pool_c, s_pool_g, s_pool_a
+pool_masks:
+        .quad (1 << NCURATED) - 1
+        .quad ((1 << NENTRIES) - 1) & ~((1 << NCURATED) - 1)
+        .quad (1 << NENTRIES) - 1
         .globl pl_preset_names
 pl_preset_names:
         .quad n00, n01, n02, n03, n04, n05, n06, n07, n08, n09
@@ -178,9 +220,12 @@ cell_fns:
 
         .data
         .balign 4
-        .globl pl_preset_cur, pl_preset_shown
-pl_preset_cur:   .long -1       # active preset, -1 = none (plain random rules)
-pl_preset_shown: .long 0        # shuffle bag: bit p set = shown this round
+        .globl pl_preset_cur, pl_preset_shown, pl_pool, pl_pool_mask
+pl_preset_cur:   .long -1       # active entry, -1 = none (plain random rules)
+pl_pool:         .long 0        # 0 curated, 1 generated, 2 all
+        .balign 8
+pl_preset_shown: .quad 0        # shuffle bag: bit e set = shown this round
+pl_pool_mask:    .quad (1 << NCURATED) - 1
 
         .bss
         .balign 64
@@ -749,7 +794,8 @@ c_drift:        # (0.75 sin(ph) + 0.12) * (hash_b(i,j) < 0.6 ? 1 : 0)
         ret
 
 # ---------------------------------------------------------------- apply
-# void pl_preset_rules(u32 p): install preset p for the current K: physics
+# void pl_preset_rules(u32 rule): install rule generator `rule` for the
+# current K: physics
 # (force scale, friction, core), attraction clamped to [-1, 1] (pl-box's
 # Helical and SkipPursuit generators exceed it), per-pair radii drawn from
 # the preset's ranges as in RuleMatrix::from_preset, then rebuild every
@@ -764,7 +810,6 @@ pl_preset_rules:
         sub     rsp, 16                 # rsp aligned, [rsp] = min radius
         lea     r13, [rip + pl]
         mov     r14d, edi
-        mov     [rip + pl_preset_cur], edi
         lea     r15, [rip + pl_preset_phys]
         shl     edi, 5
         add     r15, rdi
@@ -831,50 +876,172 @@ pl_preset_rules:
         pop     rbx
         jmp     pl_update_tables
 
-# void pl_preset_apply(u32 p): new rules for preset p, mark it shown, and
-# scatter all particles afresh (same N and K).
+# ---------------------------------------------------------------- entries
+# u32 pl_entry_rule(u32 e): rule generator of entry e
+        .globl pl_entry_rule
+pl_entry_rule:
+        lea     eax, [edi - NCURATED]
+        cmp     edi, NCURATED
+        jae     1f
+        lea     rax, [rdi + rdi*2]
+        lea     rcx, [rip + pl_curated]
+        movzx   eax, byte ptr [rcx + rax]
+1:      ret
+
+# u32 pl_entry_types(u32 e): the curated type count, 0 for a generated
+# entry (its count is drawn per switch)
+        .globl pl_entry_types
+pl_entry_types:
+        xor     eax, eax
+        cmp     edi, NCURATED
+        jae     1f
+        lea     rax, [rdi + rdi*2]
+        lea     rcx, [rip + pl_curated]
+        movzx   eax, byte ptr [rcx + rax + 1]
+1:      ret
+
+# const char *pl_entry_name(u32 e)
+        .globl pl_entry_name
+pl_entry_name:
+        call    pl_entry_rule
+        lea     rcx, [rip + pl_preset_names]
+        mov     rax, [rcx + rax*8]
+        ret
+
+# void pl_entry_install(u32 e, u32 k): K = k (1..16), entry e's rules and
+# physics, every derived table, grid and kernel; marks e shown. The caller
+# then spawns the particles.
+        .globl pl_entry_install
+pl_entry_install:
+        push    rbx                     # rsp aligned
+        mov     ebx, edi
+        mov     [rip + pl + PL_K], esi
+        mov     [rip + pl_preset_cur], edi
+        bts     [rip + pl_preset_shown], rbx
+        call    pl_entry_rule
+        mov     edi, eax
+        pop     rbx
+        jmp     pl_preset_rules
+
+# void pl_preset_apply(u32 rule): rule generator `rule` for the current K
+# with uniform particles (used by the tests as a rule-level switch)
         .globl pl_preset_apply
 pl_preset_apply:
         push    rbx                     # rsp aligned
-        mov     ebx, edi
         call    pl_preset_rules
-        bts     [rip + pl_preset_shown], ebx
         pop     rbx
         jmp     pl_random_particles
 
+# void pl_pool_set(u32 pool): 0 curated, 1 generated, 2 all
+        .globl pl_pool_set
+pl_pool_set:
+        cmp     edi, 2
+        jbe     1f
+        xor     edi, edi
+1:      mov     [rip + pl_pool], edi
+        lea     rax, [rip + pool_masks]
+        mov     rax, [rax + rdi*8]
+        mov     [rip + pl_pool_mask], rax
+        ret
+
 # ---------------------------------------------------------------- shuffle bag
-# u32 pl_preset_pick(void): a random preset that has not been shown in this
-# round and is not the current one. When every preset has been shown, a new
-# round starts with only the current one marked.
+# u32 pl_preset_pick(void): a random entry of the pool that has not been
+# shown in this round and is not the current one. When every entry of the
+# pool has been shown, a new round starts with only the current one marked.
+# A pool of one entry returns that entry.
         .globl pl_preset_pick
 pl_preset_pick:
         push    rbx                     # rsp aligned
-        mov     ebx, (1 << NPRESETS) - 1
-        mov     eax, [rip + pl_preset_shown]
-        mov     ecx, [rip + pl_preset_cur]
-        test    ecx, ecx
+        mov     rbx, [rip + pl_pool_mask]
+        mov     rax, [rip + pl_preset_shown]
+        movsxd  rcx, dword ptr [rip + pl_preset_cur]
+        test    rcx, rcx
         js      1f
-        bts     eax, ecx
-1:      andn    edx, eax, ebx           # available
+        bts     rax, rcx
+1:      andn    rdx, rax, rbx           # available
         jnz     2f
-        xor     eax, eax
-        test    ecx, ecx
+        not     rbx                     # new round: keep other pools' bits
+        and     rax, rbx
+        not     rbx
+        test    rcx, rcx
         js      11f
-        bts     eax, ecx
-11:     mov     [rip + pl_preset_shown], eax
-        andn    edx, eax, ebx
-2:      mov     ebx, edx
+        bts     rax, rcx                # only the current one shown
+11:     mov     [rip + pl_preset_shown], rax
+        andn    rdx, rax, rbx
+        jnz     2f
+        mov     rdx, rbx                # single-entry pool
+2:      mov     rbx, rdx
         call    pl_rng_u64
         shr     rax, 32
-        popcnt  ecx, ebx
+        popcnt  rcx, rbx
         imul    rax, rcx
         shr     rax, 32                 # r in [0, count)
 3:      test    eax, eax
         jz      4f
-        blsr    ebx, ebx                # drop r lowest candidates
+        blsr    rbx, rbx                # drop r lowest candidates
         dec     eax
         jmp     3b
-4:      tzcnt   eax, ebx
+4:      tzcnt   rax, rbx
+        pop     rbx
+        ret
+
+# u32 pl_types_draw(void): a type count for a generated entry, uniform 2..16
+        .globl pl_types_draw
+pl_types_draw:
+        call    pl_rng_u64
+        shr     rax, 32
+        imul    rax, rax, 15
+        shr     rax, 32
+        add     eax, 2
+        ret
+
+# int pl_entry_find(const char *name): entry by display or enum name,
+# case-insensitive; curated entries first unless the pool is "generated";
+# "c:NAME" / "g:NAME" pick the list explicitly. -1 if unknown.
+        .globl pl_entry_find
+pl_entry_find:
+        push    rbx
+        push    r12
+        push    r13                     # rsp aligned
+        mov     r12d, [rip + pl_pool]   # 1 = generated first
+        cmp     byte ptr [rdi + 1], ':'
+        jne     1f
+        movzx   eax, byte ptr [rdi]
+        or      eax, 0x20
+        add     rdi, 2
+        mov     r12d, 3                 # curated only
+        cmp     eax, 'c'
+        je      1f
+        mov     r12d, 4                 # generated only
+        cmp     eax, 'g'
+        jne     8f
+1:      call    pl_preset_find
+        test    eax, eax
+        js      9f
+        mov     ebx, eax                # rule
+        cmp     r12d, 1
+        je      5f
+        cmp     r12d, 4
+        je      5f
+        xor     ecx, ecx                # curated entry with this rule?
+2:      lea     rax, [rcx + rcx*2]
+        lea     rdx, [rip + pl_curated]
+        movzx   eax, byte ptr [rdx + rax]
+        cmp     eax, ebx
+        je      3f
+        inc     ecx
+        cmp     ecx, NCURATED
+        jb      2b
+        cmp     r12d, 3
+        je      8f
+        jmp     5f
+3:      mov     eax, ecx
+        jmp     9f
+5:      lea     eax, [ebx + NCURATED]
+        jmp     9f
+8:      mov     eax, -1
+9:      pop     r13
+        pop     r12
         pop     rbx
         ret
 

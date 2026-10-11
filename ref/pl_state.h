@@ -44,11 +44,46 @@ int pl_threads_start(uint32_t n);
 #define PL_NPRESETS 31
 extern const char *pl_preset_names[PL_NPRESETS];
 extern const float pl_preset_phys[PL_NPRESETS][8]; /* fscale fric core minr0 minr1 maxr0 maxr1 - */
+#define PL_NCURATED 17
+#define PL_NENTRIES 48  /* 0..16 curated, 17..47 generated (rule = e - 17) */
 extern int32_t pl_preset_cur;
-extern uint32_t pl_preset_shown;
-void pl_preset_attraction(uint32_t p, uint32_t k, float *out);
-void pl_preset_rules(uint32_t p);
-void pl_preset_apply(uint32_t p);
+extern uint64_t pl_preset_shown, pl_pool_mask;
+extern uint32_t pl_pool;
+extern const uint8_t pl_curated[PL_NCURATED][3]; /* rule, K, speed */
+void pl_preset_attraction(uint32_t rule, uint32_t k, float *out);
+void pl_preset_rules(uint32_t rule);
+void pl_preset_apply(uint32_t rule);   /* rules + uniform particles */
 uint32_t pl_preset_pick(void);
 int pl_preset_find(const char *name);
+uint32_t pl_entry_rule(uint32_t e);
+uint32_t pl_entry_types(uint32_t e);
+const char *pl_entry_name(uint32_t e);
+void pl_entry_install(uint32_t e, uint32_t k);
+void pl_pool_set(uint32_t pool);
+uint32_t pl_types_draw(void);
+int pl_entry_find(const char *name);
+/* src/spawn.S */
+#define PL_NSPAWNS 17
+extern const char *pl_spawn_names[PL_NSPAWNS];
+extern uint64_t pl_frng;
+extern uint32_t pl_spawn_cur;
+void pl_spawn(uint32_t layout);
+uint32_t pl_spawn_pick(void);
+uint32_t pl_spawn_raw(uint32_t layout, uint32_t n, uint32_t k, float w, float h,
+                      float *x, float *y, int32_t *t);
+/* src/palettes.S */
+extern uint32_t pl_colors[16];
+extern int32_t pl_palette_cur;
+extern const int pl_npalettes;
+extern const char *pl_palette_names[];
+void pl_palette_build(uint32_t p, uint32_t k, uint32_t *out);
+float pl_palette_mindist2(uint32_t p, uint32_t k);
+int pl_palette_ok(uint32_t p, uint32_t k);
+void pl_palette_set(uint32_t p);
+uint32_t pl_palette_pick(void);
+/* src/render.S */
+void pl_render(uint32_t *buf, uint32_t w, uint32_t h);
+void pl_draw_text(uint32_t *buf, uint32_t w, uint32_t h, int x, int y, const char *s,
+                  uint32_t argb, uint32_t scale);
+extern const uint8_t pl_font8[95][8];
 #endif
