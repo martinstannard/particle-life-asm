@@ -53,6 +53,7 @@ s_cdiv:      .asciz "--cell-div"
 s_keys:      .asciz "--keys"
 s_preset:    .asciz "--preset"
 s_interval:  .asciz "--interval"
+s_mutate:    .asciz "--mutate"
 s_nocycle:   .asciz "--no-cycle"
 s_list:      .asciz "--list-presets"
 s_headless:  .asciz "--headless"
@@ -78,6 +79,7 @@ s_r_respawn: .asciz "respawn"
 s_r_palette: .asciz "palette"
 s_switch:    .asciz "%9.3f s  %-6s -> %2u %-13s %-9s K=%-2u spawn %-13s palette %-22s %6.2f ms  maxr %.1f grid %ux%u force %.2f fric %.2f core %.2f\n"
 s_ev_log:    .asciz "%9.3f s  %-7s -> spawn %-13s palette %-22s K=%u\n"
+s_mut_log:   .asciz "%9.3f s  mutate %u rule value(s)\n"
 s_cycle_log: .asciz "%9.3f s  auto-cycle %s\n"
 s_ovl_log:   .asciz "%9.3f s  overlay %s\n"
 s_on:        .asciz "on"
@@ -128,6 +130,7 @@ s_usage:     .ascii "usage: particle_life [--particles N] [--types K(1-16), pins
              .ascii "         [--preset NAME (c:NAME / g:NAME for curated / generated)]\n"
              .ascii "         [--spawn NAME (pins the layout)] [--palette NAME (pins it)]\n"
              .ascii "         [--interval SECONDS (default 120, 0 = off)] [--no-cycle]\n"
+             .ascii "         [--mutate SECONDS (default 20, 0 = off)] re-roll 1-2 rule values\n"
              .ascii "         [--list-presets] [--list-spawns] [--list-palettes]\n"
              .ascii "         [--headless FRAMES [--fake-clock SECONDS_PER_FRAME]] no window, runs the\n"
              .ascii "                       frame loop (steps, auto-cycle) and logs switches\n"
@@ -181,6 +184,7 @@ opts:
         .quad s_keys,      opt_keys,    2
         .quad s_preset,    opt_preset,  2
         .quad s_interval,  opt_interval, 4
+        .quad s_mutate,    opt_mutate,  4
         .quad s_nocycle,   opt_nocycle, 3
         .quad s_list,      opt_list,    3
         .quad s_headless,  opt_headless, 0
@@ -206,6 +210,9 @@ opt_pool:    .quad 0
 opt_spawn:   .quad 0
 opt_palette: .quad 0
 opt_interval: .double 120.0
+opt_mutate:  .double 20.0
+mut_deadline: .double 0.0
+M_ONE:       .float -1.0, 1.0
 opt_fake:    .double 0.0
 opt_n:       .long 20000
 opt_k:       .long 0                 # 0 = not pinned
@@ -499,6 +506,9 @@ switch_to:
         vmovsd  [rsp + 16], xmm0
         vaddsd  xmm0, xmm0, [rip + opt_interval]
         vmovsd  [rip + deadline], xmm0
+        vmovsd  xmm0, [rsp + 16]
+        vaddsd  xmm0, xmm0, [rip + opt_mutate]
+        vmovsd  [rip + mut_deadline], xmm0
         inc     dword ptr [rip + switches]
         cmp     dword ptr [rip + opt_log], 0
         je      9f
@@ -604,6 +614,57 @@ cycle_tick:
         xor     ecx, ecx
         call    switch_to
 9:      pop     rbx
+        ret
+
+# every --mutate seconds re-draw 1 or 2 attraction values (random pair, uniform
+# [-1,1)) and rebuild the tables; the scene, spawn and palette stay as they are
+mutate_tick:
+        push    rbx                     # rsp aligned
+        push    r12
+        push    r13
+        cmp     dword ptr [rip + cycle_on], 0
+        je      9f
+        vxorpd  xmm0, xmm0, xmm0
+        vucomisd xmm0, [rip + opt_mutate]
+        jae     9f
+        call    clock_now
+        vucomisd xmm0, [rip + mut_deadline]
+        jb      9f
+        vaddsd  xmm0, xmm0, [rip + opt_mutate]
+        vmovsd  [rip + mut_deadline], xmm0
+        call    pl_rng_u64
+        and     eax, 1
+        lea     r13d, [rax + 1]         # 1 or 2 values
+        mov     r12d, r13d
+1:      call    pl_rng_u64
+        shr     rax, 32
+        xor     edx, edx
+        div     dword ptr [rip + pl + PL_K]
+        mov     ebx, edx                # i
+        shl     ebx, 4
+        call    pl_rng_u64
+        shr     rax, 32
+        xor     edx, edx
+        div     dword ptr [rip + pl + PL_K]
+        add     ebx, edx                # i*16 + j
+        vmovss  xmm0, [rip + M_ONE]
+        vmovss  xmm1, [rip + M_ONE + 4]
+        call    pl_rng_range
+        lea     rax, [rip + pl]
+        vmovss  [rax + PL_ATTR + rbx*4], xmm0
+        dec     r13d
+        jnz     1b
+        call    pl_update_tables
+        cmp     dword ptr [rip + opt_log], 0
+        je      9f
+        call    clock_now
+        lea     rdi, [rip + s_mut_log]
+        mov     esi, r12d
+        mov     eax, 1
+        call    printf@PLT
+9:      pop     r13
+        pop     r12
+        pop     rbx
         ret
 
 # cbuf = "next in N s" or "auto-cycle off"
@@ -826,6 +887,7 @@ headless:
         vaddsd  xmm0, xmm0, [rip + opt_fake]
         vmovsd  [rip + fake_now], xmm0
         call    cycle_tick
+        call    mutate_tick
         dec     ebx
         jmp     1b
 3:      call    clock_now
@@ -1431,10 +1493,14 @@ window:
         vmovsd  [rsp + 40], xmm0
         cmp     dword ptr [rip + paused], 0
         je      0f
+        vmovsd  xmm2, [rip + mut_deadline]
+        vaddsd  xmm2, xmm2, xmm1
+        vmovsd  [rip + mut_deadline], xmm2
         vaddsd  xmm1, xmm1, [rip + deadline]
         vmovsd  [rip + deadline], xmm1
         jmp     .Ldraw
 0:      call    cycle_tick
+        call    mutate_tick
         call    now
         vmovsd  [rsp + 32], xmm0
         mov     ebx, [rip + opt_spf]
