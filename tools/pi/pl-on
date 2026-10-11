@@ -1,0 +1,25 @@
+#!/bin/sh
+# Start Particle Life fullscreen on the Pi's display and pause the photo frame
+# (mantel/frame.py is stopped with SIGSTOP, not killed, so it carries on exactly
+# where it was when Particle Life exits). Undo with pl-off, Esc, or the end of
+# the program: the wrapper below always resumes the frame.
+#   PL_PARTICLES=10000 (default)   PL_ARGS="..." extra particle_life options
+DIR=${PL_DIR:-$HOME/particle_life_asm}
+BIN=$DIR/build-arm64/particle_life
+PIDFILE=$HOME/.pl-on.pid
+[ -x "$BIN" ] || { echo "pl-on: $BIN not built (make -C $DIR)"; exit 1; }
+if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+    echo "pl-on: already running (pid $(cat "$PIDFILE"))"; exit 0
+fi
+export DISPLAY=:0 XDG_RUNTIME_DIR=/run/user/$(id -u)
+pkill -STOP -f 'mantel/frame.py'
+(
+    "$BIN" --width 1080 --height 1920 --fullscreen --particles "${PL_PARTICLES:-10000}" $PL_ARGS \
+        >"$HOME/.pl-on.log" 2>&1 &
+    echo $! >"$PIDFILE"
+    wait $!
+    rm -f "$PIDFILE"
+    pkill -CONT -f 'mantel/frame.py'
+) >/dev/null 2>&1 &
+sleep 1
+echo "pl-on: Particle Life running (pid $(cat "$PIDFILE" 2>/dev/null)); photo frame paused. Stop with pl-off."

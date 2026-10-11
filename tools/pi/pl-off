@@ -1,0 +1,12 @@
+#!/bin/sh
+# Stop Particle Life and resume the photo frame.
+PIDFILE=$HOME/.pl-on.pid
+if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+    kill "$(cat "$PIDFILE")"
+    echo "pl-off: Particle Life stopped"
+else
+    echo "pl-off: Particle Life was not running"
+fi
+sleep 1
+pkill -CONT -f 'mantel/frame.py'
+echo "pl-off: photo frame resumed"

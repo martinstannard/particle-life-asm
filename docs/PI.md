@@ -156,3 +156,21 @@ SDL_VIDEODRIVER=kmsdrm ./build-arm64/particle_life ...
 
 Keys are the same as on x86 (README): Space pause, Right/Left preset, R
 re-roll, S spawn, K palette, [ ] types, +/- particles, F overlay, Esc quit.
+
+## Running it next to a photo frame (pl-on / pl-off)
+
+`tools/pi/pl-on` starts Particle Life fullscreen on the Pi's X display and
+pauses the photo frame (`mantel/frame.py`, SIGSTOP: nothing is killed or
+changed). `tools/pi/pl-off` stops it and resumes the frame, which carries on
+where it was. If the program exits for any reason (Esc, a crash) the frame is
+resumed as well. Install:
+
+```sh
+ssh <pi> mkdir -p bin && scp tools/pi/pl-on tools/pi/pl-off <pi>:bin/
+ssh <pi> '~/bin/pl-on'      # PL_PARTICLES=10000 by default, PL_ARGS="..." for more options
+ssh <pi> '~/bin/pl-off'
+```
+
+A new scene appears every 2 minutes (the default). With the frame paused the
+renderer takes 4.4 ms per frame instead of 9 to 12 ms, because the two no
+longer compete for the CPU.
