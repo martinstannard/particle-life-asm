@@ -15,12 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-extern uint64_t pl_frng;
-extern const char *pl_spawn_names[];
-uint32_t pl_spawn_raw(uint32_t layout, uint32_t n, uint32_t k, float w, float h,
-                      float *x, float *y, int32_t *t);
-void pl_spawn(uint32_t layout);
-#define NSPAWNS 17
+#define NSPAWNS PL_NSPAWNS
 
 static uint64_t fnv(const float *x, const float *y, const int32_t *t, uint32_t n)
 {
