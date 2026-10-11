@@ -38,8 +38,23 @@ void pl_update_tables(void);
 void pl_random_particles(void);
 void pl_bin(void);
 void pl_step(void);
-int pl_cpu_features(void);
+int pl_cpu_features(void);  /* bit 0 base SIMD (AVX2+FMA / NEON), bit 1 AVX-512F */
 int pl_threads_start(uint32_t n);
+/* Force kernels: the x86-64 build has three (AVX2 K <= 8, AVX2 K <= 16,
+   AVX-512), the AArch64 build one NEON kernel for every K. */
+#if defined(__aarch64__)
+extern char pl_kernel_neon[];
+#define PL_KERNEL_FOR(simd, k) ((void)(simd), (void)(k), (void *)pl_kernel_neon)
+#define PL_KERNEL_NAME(simd, k) ((void)(simd), (void)(k), "neon")
+#define PL_SIMD_REQUIRED "NEON"
+#else
+extern char pl_kernel_avx2_k8[], pl_kernel_avx2_k16[], pl_kernel_avx512[];
+#define PL_KERNEL_FOR(simd, k)                                                       \
+    ((simd) == 2 ? (void *)pl_kernel_avx512                                          \
+                 : ((k) <= 8 ? (void *)pl_kernel_avx2_k8 : (void *)pl_kernel_avx2_k16))
+#define PL_KERNEL_NAME(simd, k) ((simd) == 2 ? "avx512" : ((k) <= 8 ? "avx2-k8" : "avx2-k16"))
+#define PL_SIMD_REQUIRED "AVX2/FMA"
+#endif
 /* src/presets.S */
 #define PL_NPRESETS 31
 extern const char *pl_preset_names[PL_NPRESETS];

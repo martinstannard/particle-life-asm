@@ -285,7 +285,7 @@ static int test_switch(int n, int k, float w, float h, int simd, int threads, in
             if (pl.tb0[i * 16 + j] != r.b0[i][j] || pl.tas[i * 16 + j] != r.as[i][j] ||
                 pl.tc1[i * 16 + j] != r.c1[i][j] || pl.tir[i * 16 + j] != r.ir[i][j])
                 fail = 1;
-    const char *sname = simd == 2 ? "avx512" : (k <= 8 ? "avx2-k8" : "avx2-k16");
+    const char *sname = PL_KERNEL_NAME(simd, k);
     printf("  %s -> %s  N=%d K=%d %s threads=%u: maxr %.1f -> %.1f, grid %ux%u -> %ux%u, state %s\n",
            pl_preset_names[pa], pl_preset_names[pb], n, k, sname, pl.nthreads, maxr_a, pl.maxr,
            cols_a, rows_a, pl.cols, pl.rows, fail ? "MISMATCH" : "bit-identical to ref");
@@ -412,9 +412,7 @@ static int test_scenes(int simd, int threads)
                 if (pl_entry_rule(e) >= 2 && a != w) bad |= 1;
             }
         /* kernel variant follows K */
-        extern char pl_kernel_avx2_k8[], pl_kernel_avx2_k16[], pl_kernel_avx512[];
-        void *kexp = simd == 2 ? (void *)pl_kernel_avx512 : (k <= 8 ? (void *)pl_kernel_avx2_k8 : (void *)pl_kernel_avx2_k16);
-        if (pl.kernel != kexp) bad |= 2;
+        if (pl.kernel != PL_KERNEL_FOR(simd, k)) bad |= 2;
         /* particles: N, types < K */
         for (uint32_t i = 0; i < pl.n; i++) if ((uint32_t)pl.t[i] >= (uint32_t)k) bad |= 4;
         /* palette: K colours as built, distinct, different palette */
@@ -438,9 +436,9 @@ static int test_scenes(int simd, int threads)
         int og = outliers(&r), os = outliers(&st);
         if (eg > 0.05f || og > n / 1000) bad |= 32;
         if (os <= n / 10) bad |= 64;
-        printf("  K=%-2d %-13s spawn %-13s palette %-24s %s threads=%u grid %ux%u: ref max %.1e px (%d > %.0e), stale ref %4d/%d off  %s\n",
+        printf("  K=%-2d %-13s spawn %-13s palette %-24s %-8s threads=%u grid %ux%u: ref max %.1e px (%d > %.0e), stale ref %4d/%d off  %s\n",
                k, pl_entry_name(e), pl_spawn_names[layout], pl_palette_names[pal],
-               simd == 2 ? "avx512  " : (k <= 8 ? "avx2-k8 " : "avx2-k16"), pl.nthreads, pl.cols, pl.rows,
+               PL_KERNEL_NAME(simd, k), pl.nthreads, pl.cols, pl.rows,
                eg, og, TOL, os, n, bad ? "FAIL" : "OK");
         if (bad) printf("     failure bits %#x (1 rules, 2 kernel, 4 types, 8 palette, 16 grid, 32 ref, 64 stale)\n", bad);
         fails += bad != 0;
@@ -452,7 +450,7 @@ static int test_scenes(int simd, int threads)
 int main(int argc, char **argv)
 {
     feat = pl_cpu_features();
-    if (!(feat & 1)) { puts("AVX2/FMA not available"); return 1; }
+    if (!(feat & 1)) { puts(PL_SIMD_REQUIRED " not available"); return 1; }
     int simd = 2 - !(feat & 2);
     int fails = 0, f;
     pl.rng = 1;
@@ -491,6 +489,7 @@ int main(int argc, char **argv)
     puts("--- scene switches over K = 2..16 (preset, type count, spawn, palette) vs C reference");
     fails += test_scenes(1, 1);
     if (feat & 2) fails += test_scenes(2, 8);
+    else fails += test_scenes(1, 8);
 
     puts("--- A -> B -> A with the same seed");
     fails += test_aba(5000, 6, simd, 1, 9, 11, 99);     /* Shells -> Checker -> Shells */

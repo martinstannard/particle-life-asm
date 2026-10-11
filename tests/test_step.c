@@ -83,7 +83,7 @@ static int run(int n, int k, float w, float h, uint64_t seed, int simd, int thre
         if (pl.cstart[c] != (uint32_t)r.cstart[c]) fail = 1;
     for (int i = 0; i < n; i++)
         if (pl.id[i] != r.id[i] || pl.t[i] != r.t[i]) fail = 1;
-    const char *sname = simd == 2 ? "avx512" : (k <= 8 ? "avx2-k8" : "avx2-k16");
+    const char *sname = PL_KERNEL_NAME(simd, k);
     printf("N=%-6d K=%-2d world=%4.0fx%-4.0f fscale=%.1f dt=%.3f %-8s threads=%-2d R=%u grid=%ux%u  init %s\n",
            n, k, w, h, g_fscale, g_dt, sname, pl.nthreads, pl.cdiv, pl.cols, pl.rows,
            fail ? "MISMATCH" : "bit-identical");
@@ -116,7 +116,7 @@ static int run(int n, int k, float w, float h, uint64_t seed, int simd, int thre
 int main(void)
 {
     int feat = pl_cpu_features();
-    if (!(feat & 1)) { puts("AVX2/FMA not available"); return 1; }
+    if (!(feat & 1)) { puts(PL_SIMD_REQUIRED " not available"); return 1; }
     int fails = 0;
     for (g_cdiv = 1; g_cdiv <= 2; g_cdiv++) {
     printf("--- cell size = max radius / %d\n", g_cdiv);
