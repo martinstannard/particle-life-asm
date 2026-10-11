@@ -3,3 +3,4 @@ build-arm64*/
 *.ppm
 /*.png
 /pi-*.log
+TASK_*.md
