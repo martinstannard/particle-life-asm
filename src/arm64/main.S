@@ -149,7 +149,7 @@ s_usage:     .ascii "usage: particle_life [--particles N] [--types K(1-16), pins
              .ascii "         [--pool curated|generated|all (default curated)]\n"
              .ascii "         [--preset NAME (c:NAME / g:NAME for curated / generated)]\n"
              .ascii "         [--spawn NAME (pins the layout)] [--palette NAME (pins it)]\n"
-             .ascii "         [--interval SECONDS (default 20, 0 = off)] [--no-cycle]\n"
+             .ascii "         [--interval SECONDS (default 120, 0 = off)] [--no-cycle]\n"
              .ascii "         [--list-presets] [--list-spawns] [--list-palettes]\n"
              .ascii "         [--headless FRAMES [--fake-clock SECONDS_PER_FRAME]] no window, runs the\n"
              .ascii "                       frame loop (steps, auto-cycle) and logs switches\n"
@@ -234,7 +234,7 @@ opt_pool:    .quad 0
 opt_spawn:   .quad 0
 opt_palette: .quad 0
 opt_present: .quad 0
-opt_interval: .double 20.0
+opt_interval: .double 120.0
 opt_fake:    .double 0.0
 opt_n:       .long 20000
 opt_k:       .long 0                 // 0 = not pinned
