@@ -161,6 +161,15 @@ $BIN $COMMON --preset Shells --keys 'z' --no-cycle --headless 4 > "$LOG"
 n=$(grep -c ' space  ->' "$LOG")
 [ "$n" -eq 0 ] && ok "Z: pause key does not switch scenes" || fail "Z switched $n times"
 
+# 11c. --mutate: every N seconds 1 or 2 rule values are re-drawn, no scene switch
+$BIN $COMMON --preset Shells --interval 1000 --mutate 5 --fake-clock 1 --headless 62 > "$LOG"
+m=$(grep -c ' mutate [12] rule' "$LOG")
+sw=$(grep -c ' -> ' "$LOG")
+[ "$m" -eq 12 ] && [ "$sw" -eq 1 ] && ok "mutate: 12 re-rolls in 60 s at 5 s, each 1 or 2 values, no scene switch" || fail "mutate: $m re-rolls, $sw switches"
+$BIN $COMMON --preset Shells --interval 1000 --mutate 0 --fake-clock 1 --headless 62 > "$LOG"
+m=$(grep -c ' mutate ' "$LOG")
+[ "$m" -eq 0 ] && ok "mutate 0: off" || fail "mutate 0 mutated $m times"
+
 # 12. unknown names are rejected
 for opt in "--preset nosuchpreset" "--spawn nosuch" "--palette nosuch" "--pool nosuch"; do
     if $BIN $opt --headless 1 > /dev/null 2>&1; then fail "$opt accepted"; else ok "$opt rejected"; fi

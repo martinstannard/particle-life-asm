@@ -70,6 +70,7 @@ s_cdiv:      .asciz "--cell-div"
 s_keys:      .asciz "--keys"
 s_preset:    .asciz "--preset"
 s_interval:  .asciz "--interval"
+s_mutate:    .asciz "--mutate"
 s_nocycle:   .asciz "--no-cycle"
 s_list:      .asciz "--list-presets"
 s_headless:  .asciz "--headless"
@@ -99,6 +100,7 @@ s_r_respawn: .asciz "respawn"
 s_r_palette: .asciz "palette"
 s_switch:    .asciz "%9.3f s  %-6s -> %2u %-13s %-9s K=%-2u spawn %-13s palette %-22s %6.2f ms  maxr %.1f grid %ux%u force %.2f fric %.2f core %.2f\n"
 s_ev_log:    .asciz "%9.3f s  %-7s -> spawn %-13s palette %-22s K=%u\n"
+s_mut_log:   .asciz "%9.3f s  mutate %u rule value(s)\n"
 s_cycle_log: .asciz "%9.3f s  auto-cycle %s\n"
 s_ovl_log:   .asciz "%9.3f s  overlay %s\n"
 s_on:        .asciz "on"
@@ -151,6 +153,7 @@ s_usage:     .ascii "usage: particle_life [--particles N] [--types K(1-16), pins
              .ascii "         [--preset NAME (c:NAME / g:NAME for curated / generated)]\n"
              .ascii "         [--spawn NAME (pins the layout)] [--palette NAME (pins it)]\n"
              .ascii "         [--interval SECONDS (default 120, 0 = off)] [--no-cycle]\n"
+             .ascii "         [--mutate SECONDS (default 20, 0 = off)] re-roll 1-2 rule values\n"
              .ascii "         [--list-presets] [--list-spawns] [--list-palettes]\n"
              .ascii "         [--headless FRAMES [--fake-clock SECONDS_PER_FRAME]] no window, runs the\n"
              .ascii "                       frame loop (steps, auto-cycle) and logs switches\n"
@@ -206,6 +209,7 @@ opts:
         .quad s_keys,      opt_keys,    2
         .quad s_preset,    opt_preset,  2
         .quad s_interval,  opt_interval, 4
+        .quad s_mutate,    opt_mutate,  4
         .quad s_nocycle,   opt_nocycle, 3
         .quad s_list,      opt_list,    3
         .quad s_headless,  opt_headless, 0
@@ -236,6 +240,8 @@ opt_spawn:   .quad 0
 opt_palette: .quad 0
 opt_present: .quad 0
 opt_interval: .double 120.0
+opt_mutate:  .double 20.0
+mut_deadline: .double 0.0
 opt_fake:    .double 0.0
 opt_n:       .long 20000
 opt_k:       .long 0                 // 0 = not pinned
@@ -523,6 +529,11 @@ switch_to:
         fadd    d0, d0, d1
         ADR_L   x9, deadline
         str     d0, [x9]
+        ldr     d0, [sp, #16]
+        LDRS    d1, opt_mutate, x9
+        fadd    d0, d0, d1
+        ADR_L   x9, mut_deadline
+        str     d0, [x9]
         LDW     w9, switches
         add     w9, w9, #1
         STW     w9, switches
@@ -619,6 +630,58 @@ cycle_tick:
         mov     w3, #0
         bl      switch_to
 9:      LEAVE2
+
+// every --mutate seconds re-draw 1 or 2 attraction values (random pair, uniform
+// [-1,1)) and rebuild the tables; the scene, spawn and palette stay as they are
+mutate_tick:
+        ENTER4
+        LDW     w9, cycle_on
+        cbz     w9, 9f
+        LDRS    d1, opt_mutate, x9
+        fcmp    d1, #0.0
+        b.ls    9f
+        bl      clock_now
+        LDRS    d1, mut_deadline, x9
+        fcmp    d0, d1
+        b.lt    9f
+        LDRS    d1, opt_mutate, x9
+        fadd    d0, d0, d1
+        ADR_L   x9, mut_deadline
+        str     d0, [x9]
+        bl      pl_rng_u64
+        and     w19, w0, #1
+        add     w19, w19, #1                    // 1 or 2 values
+        mov     w20, w19
+1:      bl      pl_rng_u64
+        lsr     x0, x0, #32
+        ADR_L   x9, pl
+        ldr     w10, [x9, #PL_K]
+        udiv    w11, w0, w10
+        msub    w21, w11, w10, w0               // i
+        lsl     w21, w21, #4
+        bl      pl_rng_u64
+        lsr     x0, x0, #32
+        ADR_L   x9, pl
+        ldr     w10, [x9, #PL_K]
+        udiv    w11, w0, w10
+        msub    w12, w11, w10, w0               // j
+        add     w21, w21, w12                   // i*16 + j
+        fmov    s0, #-1.0
+        fmov    s1, #1.0
+        bl      pl_rng_range
+        ADR_L   x9, pl
+        add     x9, x9, #PL_ATTR
+        str     s0, [x9, x21, lsl #2]
+        subs    w19, w19, #1
+        b.ne    1b
+        bl      pl_update_tables
+        LDW     w9, opt_log
+        cbz     w9, 9f
+        bl      clock_now
+        ADR_L   x0, s_mut_log
+        mov     w1, w20
+        bl      printf
+9:      LEAVE4
 
 // cbuf = "next in N s" or "auto-cycle off"
 cycle_text:
@@ -830,6 +893,7 @@ headless:
         ADR_L   x9, fake_now
         str     d0, [x9]
         bl      cycle_tick
+        bl      mutate_tick
         sub     w19, w19, #1
         b       1b
 3:      bl      clock_now
@@ -1478,12 +1542,17 @@ window:
         LDW     w10, opt_benchp                 // --bench-present: no stepping
         orr     w9, w9, w10
         cbz     w9, 0f
+        LDRS    d2, mut_deadline, x9
+        fadd    d2, d2, d1
+        ADR_L   x9, mut_deadline
+        str     d2, [x9]
         LDRS    d2, deadline, x9
         fadd    d1, d1, d2
         ADR_L   x9, deadline
         str     d1, [x9]
         b       .Ldraw
 0:      bl      cycle_tick
+        bl      mutate_tick
         bl      now
         str     d0, [sp, #W_TSTEP]
         LDW     w19, opt_spf

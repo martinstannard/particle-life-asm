@@ -69,6 +69,9 @@ particle_life [--particles N] [--seed S] [--width W] [--height H]
               [--spawn NAME]           pin the spawn layout (default: pl-box's weighted pick)
               [--palette NAME]         pin the palette (default: a pick per switch)
               [--interval SECONDS]     auto-cycle period, default 120 (2 minutes), fractions allowed, 0 = off
+              [--mutate SECONDS]       every N seconds (default 20, 0 = off) re-draw 1 or 2 values of the
+                                       attraction matrix; the scene, spawn and palette stay;
+                                       runs with auto-cycle (off with --no-cycle, --interval 0 or C)
               [--no-cycle]             stay on the start preset
               [--list-presets] [--list-spawns] [--list-palettes]
               [--threads T] [--simd avx2|avx512] [--cell-div 1|2]
