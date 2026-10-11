@@ -9,7 +9,7 @@ helper. A port of all of it to AArch64 / NEON for the Raspberry Pi 4 lives
 in `src/arm64/` (see [ARM64](#arm64-raspberry-pi-4); assembled and
 reviewed, not yet run).
 
-Every 20 seconds the window shows a new **scene**:
+Every 2 minutes the window shows a new **scene**:
 
 - a **preset**: one of pl-box's 17 curated configurations (rule generator,
   type count and tuned physics), or one of the 31 generated rule presets;
@@ -51,7 +51,7 @@ when CPUID and XGETBV report it).
 
 ```sh
 make                 # build/particle_life and build/ref_bench
-make run             # window, 20k particles, 1600x900, new scene every 20 s
+make run             # window, 20k particles, 1600x900, new scene every 2 minutes
 make run ARGS="--interval 5 --pool all"
 make test            # spawns and presets vs pl-box, asm vs C reference, overlay, cycling
 make bench           # headless, 10k/50k/200k particles, 1 and 8 threads
@@ -68,7 +68,7 @@ particle_life [--particles N] [--seed S] [--width W] [--height H]
                                        g:NAME pick the curated / generated one)
               [--spawn NAME]           pin the spawn layout (default: pl-box's weighted pick)
               [--palette NAME]         pin the palette (default: a pick per switch)
-              [--interval SECONDS]     auto-cycle period, default 20, fractions allowed, 0 = off
+              [--interval SECONDS]     auto-cycle period, default 120 (2 minutes), fractions allowed, 0 = off
               [--no-cycle]             stay on the start preset
               [--list-presets] [--list-spawns] [--list-palettes]
               [--threads T] [--simd avx2|avx512] [--cell-div 1|2]
