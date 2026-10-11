@@ -1,5 +1,10 @@
 # Program entry: argument parsing, headless benchmark, frame dump and the
 # SDL2 window loop. Everything here calls libc / SDL2 through the C ABI.
+#
+# A "scene" is what a switch installs: a preset (entry of src/presets.S),
+# its type count, a spawn layout (src/spawn.S) and a palette
+# (src/palettes.S). Every --interval seconds the window picks a new preset
+# from the pool's shuffle bag and a spawn layout with pl-box's weights.
 
         .intel_syntax noprefix
         .include "layout.inc"
@@ -12,14 +17,23 @@
 .set SDL_TEXTUREACCESS_STREAMING, 1
 .set SDL_QUIT,              0x100
 .set SDL_KEYDOWN,           0x300
+.set KMOD_SHIFT,            0x0003
 .set SDLK_KP_MINUS,         0x40000056
 .set SDLK_KP_PLUS,          0x40000057
 .set SDLK_RIGHT,            0x4000004F
 .set SDLK_LEFT,             0x40000050
-.set NPRESETS,              31
+.set NCURATED,              17
+.set NENTRIES,              48
+.set NSPAWNS,               17
 .set CLOCK_MONOTONIC,       1
 .set SC_NPROCESSORS_ONLN,   84
 .set MAX_PARTICLES,         4000000
+.set TEXT_ARGB,             0xFFE8E8E8
+.set OTEXT_SIZE,            1024
+
+# switch_to flags
+.set KEEP_PALETTE,          1
+.set KEEP_SPAWN,            2
 
         .section .rodata
 s_particles: .asciz "--particles"
@@ -44,53 +58,91 @@ s_list:      .asciz "--list-presets"
 s_headless:  .asciz "--headless"
 s_fake:      .asciz "--fake-clock"
 s_log:       .asciz "--log-switches"
+s_pool:      .asciz "--pool"
+s_spawn:     .asciz "--spawn"
+s_lspawns:   .asciz "--list-spawns"
+s_palette:   .asciz "--palette"
+s_lpal:      .asciz "--list-palettes"
+s_overlay:   .asciz "--overlay"
+s_benchr:    .asciz "--bench-render"
 s_r_start:   .asciz "start"
 s_r_timer:   .asciz "timer"
 s_r_next:    .asciz "next"
 s_r_prev:    .asciz "prev"
 s_r_reroll:  .asciz "reroll"
 s_r_types:   .asciz "types"
-s_switch:    .asciz "%9.3f s  %-6s -> %2u %-13s  %6.2f ms  K=%u maxr %.1f grid %ux%u force %.2f fric %.2f core %.2f\n"
+s_r_pool:    .asciz "pool"
+s_r_spawn:   .asciz "spawn"
+s_r_respawn: .asciz "respawn"
+s_r_palette: .asciz "palette"
+s_switch:    .asciz "%9.3f s  %-6s -> %2u %-13s %-9s K=%-2u spawn %-13s palette %-22s %6.2f ms  maxr %.1f grid %ux%u force %.2f fric %.2f core %.2f\n"
+s_ev_log:    .asciz "%9.3f s  %-7s -> spawn %-13s palette %-22s K=%u\n"
 s_cycle_log: .asciz "%9.3f s  auto-cycle %s\n"
+s_ovl_log:   .asciz "%9.3f s  overlay %s\n"
 s_on:        .asciz "on"
 s_off:       .asciz "off"
 s_next_in:   .asciz "next in %.0f s"
 s_cycoff:    .asciz "auto-cycle off"
 s_rules:     .asciz "random rules"
-s_listfmt:   .asciz "%2u  %s\n"
+s_builtin:   .asciz "built-in"
+s_curated:   .asciz "curated"
+s_generated: .asciz "generated"
+s_listfmt:   .asciz "%2u  %-13s %-9s K=%s  force %.2f fric %.2f core %.2f minr %.0f-%.0f maxr %.0f-%.0f\n"
+s_lspfmt:    .asciz "%2u  %-13s %s\n"
+s_lpalfmt:   .asciz "%2u  %-30s %2u colours, qualifies for K = %s\n"
+s_kdraw:     .asciz "2..16"
+s_kfmt:      .asciz "%u"
+s_inpat:     .asciz "(in pl-box's spawn_pattern)"
+s_notpat:    .asciz ""
 s_badpreset: .asciz "unknown preset '%s' (see --list-presets)\n"
+s_badspawn:  .asciz "unknown spawn '%s' (see --list-spawns)\n"
+s_badpal:    .asciz "unknown palette '%s' (see --list-palettes)\n"
+s_badpool:   .asciz "unknown pool '%s' (curated, generated or all)\n"
 s_headdone:  .asciz "headless: %u frames x %u steps, %u preset switches, clock %.3f s\n"
 s_avx2:      .asciz "avx2"
 s_avx512:    .asciz "avx512"
 s_name_avx2: .asciz "avx2"
 s_name_512:  .asciz "avx512"
 s_title0:    .asciz "Particle Life (asm)"
-s_title:     .asciz "Particle Life (asm) | %s (%u/31) | %s | %u particles, %u types | %.0f fps | step %.2f ms | %u threads %s%s"
+s_title:     .asciz "Particle Life (asm) | %s (%s %u/%u) | %s | %u particles, %u types | %.0f fps | step %.2f ms | spawn %s | palette %s%s"
 s_paused:    .asciz " | PAUSED"
+s_paused2:   .asciz "   PAUSED"
 s_empty:     .asciz ""
-s_usage:     .ascii "usage: particle_life [--particles N] [--types K(1-16)] [--seed S]\n"
-             .ascii "         [--width W] [--height H] (>= 256)\n"
+# overlay lines
+s_o1:        .asciz "FPS %.1f   step %.2f ms x%u\n"
+s_o1d:       .asciz "FPS -   step %.2f ms x%u\n"
+s_o2:        .asciz "%u particles   %u types   %u threads %s\n"
+s_o3:        .asciz "preset %s (%s %u/%u)   pool %s\n"
+s_o4:        .asciz "spawn %s\npalette %s\n%s%s"
+s_usage:     .ascii "usage: particle_life [--particles N] [--types K(1-16), pins the type count]\n"
+             .ascii "         [--seed S] [--width W] [--height H] (>= 256)\n"
              .ascii "         [--threads T] [--simd avx2|avx512] [--cell-div 1|2]\n"
              .ascii "         [--steps-per-frame S] [--no-vsync]\n"
              .ascii "         [--bench STEPS [--warmup STEPS]]   headless benchmark\n"
-             .ascii "         [--dump-frame out.ppm [--steps STEPS]] headless, writes one frame\n"
-             .ascii "         [--preset NAME] [--interval SECONDS (default 20, 0 = off)] [--no-cycle]\n"
-             .ascii "         [--list-presets]\n"
+             .ascii "         [--bench-render FRAMES]  time the renderer with and without overlay\n"
+             .ascii "         [--dump-frame out.ppm [--steps STEPS] [--overlay]] headless, one frame\n"
+             .ascii "         [--pool curated|generated|all (default curated)]\n"
+             .ascii "         [--preset NAME (c:NAME / g:NAME for curated / generated)]\n"
+             .ascii "         [--spawn NAME (pins the layout)] [--palette NAME (pins it)]\n"
+             .ascii "         [--interval SECONDS (default 20, 0 = off)] [--no-cycle]\n"
+             .ascii "         [--list-presets] [--list-spawns] [--list-palettes]\n"
              .ascii "         [--headless FRAMES [--fake-clock SECONDS_PER_FRAME]] no window, runs the\n"
              .ascii "                       frame loop (steps, auto-cycle) and logs switches\n"
              .ascii "         [--log-switches]\n"
              .ascii "         [--keys STR]  feed key presses (e.g. \"r9+\") to the key handler first;\n"
-             .ascii "                       '>' and '<' stand for Right and Left\n"
-             .ascii "keys: Space pause, Right/Left next/previous preset, C auto-cycle on/off,\n"
-             .ascii "      R re-roll the current preset, N new positions, +/- particles,\n"
-             .asciz "      1-9 types, Esc quit\n"
+             .ascii "                       '>' '<' = Right Left, 'S' = Shift+S\n"
+             .ascii "keys: Space pause, Right/Left next/previous preset, P pool, C auto-cycle,\n"
+             .ascii "      R re-roll, S/Shift+S next/previous spawn, N respawn, K palette,\n"
+             .ascii "      [ ] fewer/more types, 1-9 types, +/- particles, F overlay, Esc quit\n"
+             .byte 0
 s_noavx2:    .asciz "error: this program needs a CPU with AVX2 and FMA\n"
 s_no512:     .asciz "error: AVX-512F not available on this CPU\n"
 s_nomem:     .asciz "error: out of memory\n"
 s_sdlerr:    .asciz "SDL error: %s\n"
 s_bench_hdr: .asciz "asm   simd=%s threads=%u particles=%u types=%u world=%ux%u cell-div=%u steps=%u (after %u warmup)\n"
 s_bench_res: .asciz "      %.1f steps/s  %.3f ms/step  %.2f ns/particle-step\n"
-s_dumped:    .asciz "wrote %s (%ux%u, after %u steps, %u particles, %s)\n"
+s_benchr_res:.asciz "render %ux%u, %u particles, %u frames: %.3f ms/frame without overlay, %.3f ms/frame with overlay (+%.3f ms)\n"
+s_dumped:    .asciz "wrote %s (%ux%u, after %u steps, %u particles, %u types, %s, spawn %s, palette %s)\n"
 s_dumpfail:  .asciz "error: could not write %s\n"
         .balign 8
 D_1E9:       .double 1.0e-9
@@ -98,6 +150,7 @@ D_1E3:       .double 1000.0
 D_1E9I:      .double 1.0e9
 D_HALF:      .double 0.5
 D_ZERO:      .double 0.0
+D_M1:        .double -1.0
 F_DT:        .float 0.016666668
 F_FRIC:      .float 0.4
 F_FSCALE:    .float 0.3
@@ -130,6 +183,13 @@ opts:
         .quad s_headless,  opt_headless, 0
         .quad s_fake,      opt_fake,    4
         .quad s_log,       opt_log,     3
+        .quad s_pool,      opt_pool,    2
+        .quad s_spawn,     opt_spawn,   2
+        .quad s_lspawns,   opt_lspawns, 3
+        .quad s_palette,   opt_palette, 2
+        .quad s_lpal,      opt_lpal,    3
+        .quad s_overlay,   opt_overlay, 3
+        .quad s_benchr,    opt_benchr,  0
         .quad 0
 
         .data
@@ -139,10 +199,13 @@ opt_simd:    .quad 0
 opt_dump:    .quad 0
 opt_keys:    .quad 0
 opt_preset:  .quad 0
+opt_pool:    .quad 0
+opt_spawn:   .quad 0
+opt_palette: .quad 0
 opt_interval: .double 20.0
 opt_fake:    .double 0.0
 opt_n:       .long 20000
-opt_k:       .long 6
+opt_k:       .long 0                 # 0 = not pinned
 opt_w:       .long 1600
 opt_h:       .long 900
 opt_bench:   .long 0
@@ -156,12 +219,20 @@ opt_nocycle: .long 0
 opt_list:    .long 0
 opt_headless: .long 0
 opt_log:     .long 0
+opt_lspawns: .long 0
+opt_lpal:    .long 0
+opt_overlay: .long 0
+opt_benchr:  .long 0
 start_preset: .long -1
+spawn_pin:   .long -1
+palette_pin: .long -1
+overlay_on:  .long 1
 
         .bss
         .balign 64
 event:       .skip 64
-title:       .skip 256
+title:       .skip 512
+otext:       .skip OTEXT_SIZE
 win:         .skip 8
 ren:         .skip 8
 tex:         .skip 8
@@ -169,10 +240,14 @@ pixels:      .skip 8
 paused:      .skip 4
 cycle_on:    .skip 4
 switches:    .skip 4
+otext_len:   .skip 4
         .balign 8
 deadline:    .skip 8                # clock time of the next automatic switch
 fake_now:    .skip 8
+g_fps:       .skip 8                # last measured fps (-1 = none: dump)
+g_ms:        .skip 8                # last measured ms per step
 cbuf:        .skip 48
+kbuf:        .skip 64
 
         .text
 
@@ -201,6 +276,17 @@ die:    # rdi = message, noreturn
         mov     rsi, [rip + stderr]
         call    fputs@PLT
         mov     edi, 1
+        call    exit@PLT
+
+# noreturn: fprintf(stderr, rdi = format, rsi = argument); exit 2
+die_arg:
+        and     rsp, -16
+        mov     rdx, rsi
+        mov     rsi, rdi
+        mov     rdi, [rip + stderr]
+        xor     eax, eax
+        call    fprintf@PLT
+        mov     edi, 2
         call    exit@PLT
 
 # parse argv; edi = argc, rsi = argv
@@ -275,7 +361,10 @@ setup_sim:
         push    rbx                     # rsp aligned
         lea     rbx, [rip + pl]
         mov     eax, [rip + opt_k]
-        mov     [rbx + PL_K], eax
+        test    eax, eax
+        jnz     0f
+        mov     eax, 6                  # until a preset sets its own
+0:      mov     [rbx + PL_K], eax
         vcvtsi2ss xmm0, xmm0, dword ptr [rip + opt_w]
         vmovss  [rbx + PL_W], xmm0
         vcvtsi2ss xmm0, xmm0, dword ptr [rip + opt_h]
@@ -290,43 +379,58 @@ setup_sim:
         mov     [rbx + PL_CORE], eax
         mov     rax, [rip + opt_seed]
         cmp     rax, -1
-        jne     0f
+        jne     1f
         mov     eax, 1                  # bench, dump, headless: reproducible
         cmp     dword ptr [rip + opt_bench], 0
-        jne     0f
+        jne     1f
         cmp     qword ptr [rip + opt_dump], 0
-        jne     0f
+        jne     1f
         cmp     dword ptr [rip + opt_headless], 0
-        jne     0f
-        call    now                     # window: a different preset order each run
+        jne     1f
+        cmp     dword ptr [rip + opt_benchr], 0
+        jne     1f
+        call    now                     # window: a different start each run
         vmulsd  xmm0, xmm0, [rip + D_1E9I]
         vcvttsd2si rax, xmm0
-0:      mov     [rbx + PL_RNG], rax
+1:      mov     [rbx + PL_RNG], rax
         mov     eax, [rip + opt_cdiv]
         mov     [rbx + PL_CDIV], eax
         mov     edi, [rip + opt_n]
         call    pl_alloc
         test    eax, eax
-        jz      1f
+        jz      2f
         lea     rdi, [rip + s_nomem]
         call    die
-        # a preset when one was named, or always for the window and
-        # --headless; plain random rules (as before presets) for bench/dump
-1:      mov     eax, [rip + start_preset]
+        # bench, and dump without --preset: plain random rules (as before
+        # presets) with uniform particles, or --spawn's layout;
+        # all other modes start on a preset (--preset, or a shuffle-bag pick)
+2:      mov     eax, [rip + start_preset]
         test    eax, eax
-        jns     2f
+        jns     3f
         cmp     dword ptr [rip + opt_bench], 0
-        jne     3f
+        jne     4f
         cmp     qword ptr [rip + opt_dump], 0
-        jne     3f
+        jne     4f
         call    pl_preset_pick
-2:      mov     edi, eax
+3:      mov     edi, eax
         lea     rsi, [rip + s_r_start]
+        xor     edx, edx
+        xor     ecx, ecx
         call    switch_to
         pop     rbx
         ret
-3:      call    pl_random_rules
-        call    pl_random_particles
+4:      call    pl_random_rules
+        mov     edi, [rip + palette_pin]
+        test    edi, edi
+        js      41f
+        call    pl_palette_set
+41:     mov     edi, [rip + spawn_pin]
+        test    edi, edi
+        js      42f
+        call    pl_spawn
+        pop     rbx
+        ret
+42:     call    pl_random_particles
         pop     rbx
         ret
 
@@ -339,18 +443,51 @@ clock_now:
         vmovsd  xmm0, [rip + fake_now]
         ret
 
-# switch_to(u32 p, const char *reason): install preset p (rules, physics,
-# derived tables, grid, fresh particles), restart the switch timer, log
+# switch_to(u32 e, const char *reason, u32 k, u32 flags): install a scene:
+# preset e with k types (k = 0: --types if given, else the preset's own
+# count, else a draw 2..16), every derived table and the grid, then a spawn
+# layout (KEEP_SPAWN: the current one; else --spawn's, else pl-box's
+# weighted pick) and a palette (--palette's; KEEP_PALETTE: the current one
+# when it still qualifies for K; otherwise a new pick). Restarts the switch
+# timer and logs.
 switch_to:
         push    rbx
         push    r12
-        sub     rsp, 40                 # rsp aligned; [rsp] t0, [rsp+8] ms, [rsp+16] clock
+        push    r13
+        push    r14
+        push    r15
+        sub     rsp, 48                 # rsp aligned; [rsp] t0, [rsp+8] ms, [rsp+16] clock
         mov     ebx, edi
         mov     r12, rsi
+        mov     r13d, edx
+        mov     r14d, ecx
         call    now
         vmovsd  [rsp], xmm0
+        test    r13d, r13d
+        jnz     2f
+        mov     r13d, [rip + opt_k]
+        test    r13d, r13d
+        jnz     2f
         mov     edi, ebx
-        call    pl_preset_apply
+        call    pl_entry_types
+        mov     r13d, eax
+        test    eax, eax
+        jnz     2f
+        call    pl_types_draw
+        mov     r13d, eax
+2:      mov     edi, ebx
+        mov     esi, r13d
+        call    pl_entry_install
+        mov     edi, [rip + pl_spawn_cur]
+        test    r14d, KEEP_SPAWN
+        jnz     3f
+        mov     edi, [rip + spawn_pin]
+        test    edi, edi
+        jns     3f
+        call    pl_spawn_pick
+        mov     edi, eax
+3:      call    pl_spawn
+        call    choose_palette
         call    now
         vsubsd  xmm0, xmm0, [rsp]
         vmulsd  xmm0, xmm0, [rip + D_1E3]
@@ -362,26 +499,89 @@ switch_to:
         inc     dword ptr [rip + switches]
         cmp     dword ptr [rip + opt_log], 0
         je      9f
-        lea     rdi, [rip + s_switch]
-        vmovsd  xmm0, [rsp + 16]
+        mov     eax, [rip + pl + PL_ROWS]
+        push    rax
+        mov     eax, [rip + pl + PL_COLS]
+        push    rax
+        call    palette_name
+        push    rax
+        call    spawn_name
+        push    rax
+        mov     edi, ebx
+        call    pl_entry_name
+        mov     rcx, rax
         mov     rsi, r12
         mov     edx, ebx
-        lea     rax, [rip + pl_preset_names]
-        mov     rcx, [rax + rbx*8]
-        vmovsd  xmm1, [rsp + 8]
-        mov     r8d, [rip + pl + PL_K]
+        lea     r8, [rip + s_curated]
+        lea     rax, [rip + s_generated]
+        cmp     ebx, NCURATED
+        cmovae  r8, rax
+        mov     r9d, [rip + pl + PL_K]
+        lea     rdi, [rip + s_switch]
+        vmovsd  xmm0, [rsp + 32 + 16]
+        vmovsd  xmm1, [rsp + 32 + 8]
         vcvtss2sd xmm2, xmm2, [rip + pl + PL_MAXR]
-        mov     r9d, [rip + pl + PL_COLS]
         vcvtss2sd xmm3, xmm3, [rip + pl + PL_FSCALE]
         vcvtss2sd xmm4, xmm4, [rip + pl + PL_FRIC]
         vcvtss2sd xmm5, xmm5, [rip + pl + PL_CORE]
-        mov     eax, [rip + pl + PL_ROWS]
-        push    rax
-        push    rax
         mov     eax, 6
         call    printf@PLT
-        add     rsp, 16
-9:      add     rsp, 40
+        add     rsp, 32
+9:      add     rsp, 48
+        pop     r15
+        pop     r14
+        pop     r13
+        pop     r12
+        pop     rbx
+        ret
+
+# palette for the scene just installed (r14d = switch_to flags)
+choose_palette:
+        push    rbx                     # rsp aligned
+        mov     edi, [rip + palette_pin]
+        test    edi, edi
+        jns     8f
+        test    r14d, KEEP_PALETTE
+        jz      1f
+        mov     edi, [rip + pl_palette_cur]
+        test    edi, edi
+        js      1f
+        mov     esi, [rip + pl + PL_K]
+        call    pl_palette_ok
+        test    eax, eax
+        jz      1f
+        mov     edi, [rip + pl_palette_cur]
+        jmp     8f
+1:      call    pl_palette_pick
+        mov     edi, eax
+8:      call    pl_palette_set
+        pop     rbx
+        ret
+
+# log a scene event that is not a preset switch (rdi = reason)
+log_event:
+        push    rbx
+        push    r12
+        push    r13
+        sub     rsp, 16                 # rsp aligned; [rsp] clock
+        cmp     dword ptr [rip + opt_log], 0
+        je      9f
+        mov     rbx, rdi
+        call    clock_now
+        vmovsd  [rsp], xmm0
+        call    spawn_name
+        mov     r12, rax
+        call    palette_name
+        mov     rcx, rax
+        mov     rdx, r12
+        mov     rsi, rbx
+        mov     r8d, [rip + pl + PL_K]
+        lea     rdi, [rip + s_ev_log]
+        vmovsd  xmm0, [rsp]
+        mov     eax, 1
+        call    printf@PLT
+9:      add     rsp, 16
+        pop     r13
         pop     r12
         pop     rbx
         ret
@@ -397,6 +597,8 @@ cycle_tick:
         call    pl_preset_pick
         mov     edi, eax
         lea     rsi, [rip + s_r_timer]
+        xor     edx, edx
+        xor     ecx, ecx
         call    switch_to
 9:      pop     rbx
         ret
@@ -425,12 +627,180 @@ cycle_text:
 # rax = name of the active preset
 preset_name:
         lea     rax, [rip + s_rules]
-        movsxd  rcx, dword ptr [rip + pl_preset_cur]
+        mov     edi, [rip + pl_preset_cur]
+        test    edi, edi
+        js      1f
+        push    rbx
+        call    pl_entry_name
+        pop     rbx
+1:      ret
+
+# rax = list name ("curated"/"generated"), ecx = 1-based index in that list,
+# edx = list size, for the active preset
+preset_list:
+        mov     eax, [rip + pl_preset_cur]
+        lea     ecx, [eax + 1]
+        mov     edx, NCURATED
+        cmp     eax, NCURATED
+        jae     1f
+        lea     rax, [rip + s_curated]
+        ret
+1:      sub     ecx, NCURATED
+        mov     edx, NENTRIES - NCURATED
+        lea     rax, [rip + s_generated]
+        ret
+
+spawn_name:
+        mov     eax, [rip + pl_spawn_cur]
+        lea     rcx, [rip + pl_spawn_names]
+        mov     rax, [rcx + rax*8]
+        ret
+
+palette_name:
+        lea     rax, [rip + s_builtin]
+        movsxd  rcx, dword ptr [rip + pl_palette_cur]
         test    rcx, rcx
         js      1f
-        lea     rax, [rip + pl_preset_names]
+        lea     rax, [rip + pl_palette_names]
         mov     rax, [rax + rcx*8]
 1:      ret
+
+pool_name:
+        mov     eax, [rip + pl_pool]
+        lea     rcx, [rip + pl_pool_names]
+        mov     rax, [rcx + rax*8]
+        ret
+
+# ------------------------------------------------------------------ overlay
+# otext = the overlay lines for the current state (g_fps < 0: no fps)
+.macro OAPPEND
+        mov     ecx, [rip + otext_len]
+        lea     rdi, [rip + otext]
+        add     rdi, rcx
+        mov     esi, OTEXT_SIZE
+        sub     esi, ecx
+.endm
+.macro OADVANCE
+        add     eax, [rip + otext_len]
+        mov     ecx, OTEXT_SIZE - 1
+        cmp     eax, ecx
+        cmova   eax, ecx
+        mov     [rip + otext_len], eax
+.endm
+overlay_text:
+        push    rbx
+        push    r12
+        push    r13
+        push    r14
+        push    r15                     # rsp aligned
+        mov     dword ptr [rip + otext_len], 0
+        vxorpd  xmm0, xmm0, xmm0
+        vucomisd xmm0, [rip + g_fps]
+        ja      1f
+        OAPPEND
+        lea     rdx, [rip + s_o1]
+        mov     ecx, [rip + opt_spf]
+        vmovsd  xmm0, [rip + g_fps]
+        vmovsd  xmm1, [rip + g_ms]
+        mov     eax, 2
+        call    snprintf@PLT
+        jmp     2f
+1:      OAPPEND
+        lea     rdx, [rip + s_o1d]
+        mov     ecx, [rip + opt_spf]
+        vmovsd  xmm0, [rip + g_ms]
+        mov     eax, 1
+        call    snprintf@PLT
+2:      OADVANCE
+        call    simd_name
+        mov     r9, rax
+        OAPPEND
+        lea     rdx, [rip + s_o2]
+        mov     ecx, [rip + pl + PL_N]
+        mov     r8d, [rip + pl + PL_K]
+        push    r9
+        push    r9
+        mov     r9d, [rip + pl + PL_NTHREADS]
+        xor     eax, eax
+        call    snprintf@PLT                    # arg 7 (simd name) on the stack
+        add     rsp, 16
+        OADVANCE
+        call    preset_name
+        mov     r12, rax
+        call    preset_list
+        mov     r13, rax
+        mov     r14d, ecx
+        mov     r15d, edx
+        mov     eax, [rip + pl_preset_cur]
+        test    eax, eax
+        jns     3f
+        lea     r13, [rip + s_empty]
+        xor     r14d, r14d
+        xor     r15d, r15d
+3:      call    pool_name
+        push    rax
+        push    rax
+        OAPPEND
+        lea     rdx, [rip + s_o3]
+        mov     rcx, r12
+        mov     r8, r13
+        mov     r9d, r14d
+        mov     [rsp], r15
+        xor     eax, eax
+        call    snprintf@PLT                    # preset, list, i, n, pool
+        add     rsp, 16
+        OADVANCE
+        call    spawn_name
+        mov     r12, rax
+        call    palette_name
+        mov     r13, rax
+        lea     r14, [rip + s_empty]
+        lea     rax, [rip + s_paused2]
+        cmp     dword ptr [rip + paused], 0
+        cmovne  r14, rax
+        push    r14
+        push    r14
+        OAPPEND
+        lea     rdx, [rip + s_o4]
+        mov     rcx, r12
+        mov     r8, r13
+        lea     r9, [rip + cbuf]
+        xor     eax, eax
+        call    snprintf@PLT
+        add     rsp, 16
+        OADVANCE
+        pop     r15
+        pop     r14
+        pop     r13
+        pop     r12
+        pop     rbx
+        ret
+
+# draw otext onto buffer rdi (opt_w x opt_h); scale max(1, h / 450)
+draw_overlay:
+        push    rbx                     # rsp aligned
+        mov     rbx, rdi
+        mov     eax, [rip + opt_h]
+        xor     edx, edx
+        mov     ecx, 450
+        div     ecx
+        mov     ecx, 1
+        cmp     eax, ecx
+        cmovb   eax, ecx
+        mov     r10d, eax               # scale
+        mov     rdi, rbx
+        mov     esi, [rip + opt_w]
+        mov     edx, [rip + opt_h]
+        lea     ecx, [r10d*8]           # x = y = 8 scale
+        mov     r8d, ecx
+        lea     r9, [rip + otext]
+        push    r10
+        mov     eax, TEXT_ARGB
+        push    rax
+        call    pl_draw_text
+        add     rsp, 16
+        pop     rbx
+        ret
 
 # ------------------------------------------------------------------ headless
 # the window's frame loop without SDL: opt_spf steps, then the auto-cycle
@@ -469,7 +839,7 @@ headless:
         pop     rbx
         ret
 
-# change particle count to edi (clamped) and respawn
+# change particle count to edi (clamped) and respawn in the current layout
 set_particles:
         push    rbx
         mov     eax, 100
@@ -484,7 +854,8 @@ set_particles:
         jz      1f
         lea     rdi, [rip + s_nomem]
         call    die
-1:      call    pl_random_particles
+1:      mov     edi, [rip + pl_spawn_cur]
+        call    pl_spawn
         pop     rbx
         ret
 
@@ -554,18 +925,97 @@ bench:
         pop     rbx
         ret
 
+# --bench-render N: N frames of pl_render alone, then N frames of pl_render
+# plus the overlay (text built and drawn every frame, as in the window)
+bench_render:
+        push    rbx
+        push    r12
+        sub     rsp, 40                 # rsp aligned; [rsp] t, [rsp+8] plain, [rsp+16] overlay
+        mov     edi, [rip + opt_w]
+        imul    edi, [rip + opt_h]
+        shl     rdi, 2
+        call    malloc@PLT
+        mov     r12, rax
+        vmovsd  xmm0, [rip + D_M1]
+        vmovsd  [rip + g_fps], xmm0
+        call    cycle_text
+        call    now
+        vmovsd  [rsp], xmm0
+        mov     ebx, [rip + opt_benchr]
+1:      test    ebx, ebx
+        jz      2f
+        mov     rdi, r12
+        mov     esi, [rip + opt_w]
+        mov     edx, [rip + opt_h]
+        call    pl_render
+        dec     ebx
+        jmp     1b
+2:      call    now
+        vsubsd  xmm1, xmm0, [rsp]
+        vmovsd  [rsp + 8], xmm1
+        vmovsd  [rsp], xmm0
+        mov     ebx, [rip + opt_benchr]
+3:      test    ebx, ebx
+        jz      4f
+        mov     rdi, r12
+        mov     esi, [rip + opt_w]
+        mov     edx, [rip + opt_h]
+        call    pl_render
+        call    cycle_text
+        call    overlay_text
+        mov     rdi, r12
+        call    draw_overlay
+        dec     ebx
+        jmp     3b
+4:      call    now
+        vsubsd  xmm1, xmm0, [rsp]
+        vcvtsi2sd xmm2, xmm2, dword ptr [rip + opt_benchr]
+        vmovsd  xmm0, [rsp + 8]
+        vdivsd  xmm0, xmm0, xmm2
+        vmulsd  xmm0, xmm0, [rip + D_1E3]
+        vdivsd  xmm1, xmm1, xmm2
+        vmulsd  xmm1, xmm1, [rip + D_1E3]
+        vsubsd  xmm2, xmm1, xmm0
+        lea     rdi, [rip + s_benchr_res]
+        mov     esi, [rip + opt_w]
+        mov     edx, [rip + opt_h]
+        mov     ecx, [rip + pl + PL_N]
+        mov     r8d, [rip + opt_benchr]
+        mov     eax, 3
+        call    printf@PLT
+        mov     rdi, r12
+        call    free@PLT
+        xor     eax, eax
+        add     rsp, 40
+        pop     r12
+        pop     rbx
+        ret
+
 # ------------------------------------------------------------------ dump
 dump_frame:
         push    rbx
         push    r12
-        sub     rsp, 8                  # rsp aligned
+        sub     rsp, 24                 # rsp aligned; [rsp] t0
+        call    now
+        vmovsd  [rsp], xmm0
         mov     ebx, [rip + opt_steps]
 1:      test    ebx, ebx
         jz      2f
         call    pl_step
         dec     ebx
         jmp     1b
-2:      mov     edi, [rip + opt_w]
+2:      call    now                     # ms per step for the overlay
+        vsubsd  xmm0, xmm0, [rsp]
+        vmulsd  xmm0, xmm0, [rip + D_1E3]
+        mov     eax, [rip + opt_steps]
+        test    eax, eax
+        jz      21f
+        vcvtsi2sd xmm1, xmm1, eax
+        vdivsd  xmm0, xmm0, xmm1
+21:     vmovsd  [rip + g_ms], xmm0
+        vmovsd  xmm0, [rip + D_M1]
+        vmovsd  [rip + g_fps], xmm0
+        mov     edi, [rip + opt_w]
         imul    edi, [rip + opt_h]
         shl     rdi, 2
         call    malloc@PLT
@@ -574,15 +1024,26 @@ dump_frame:
         mov     esi, [rip + opt_w]
         mov     edx, [rip + opt_h]
         call    pl_render
-        mov     rdi, [rip + opt_dump]
+        cmp     dword ptr [rip + opt_overlay], 0
+        je      22f
+        call    cycle_text
+        call    overlay_text
+        mov     rdi, r12
+        call    draw_overlay
+22:     mov     rdi, [rip + opt_dump]
         mov     rsi, r12
         mov     edx, [rip + opt_w]
         mov     ecx, [rip + opt_h]
         call    pl_write_ppm
         test    eax, eax
         jnz     3f
+        call    palette_name
+        push    rax
+        call    spawn_name
+        push    rax
         call    preset_name
         push    rax
+        mov     eax, [rip + pl + PL_K]
         push    rax
         lea     rdi, [rip + s_dumped]
         mov     rsi, [rip + opt_dump]
@@ -592,7 +1053,7 @@ dump_frame:
         mov     r9d, [rip + pl + PL_N]
         xor     eax, eax
         call    printf@PLT
-        add     rsp, 16
+        add     rsp, 32
         xor     eax, eax
         jmp     4f
 3:      lea     rdi, [rip + s_dumpfail]
@@ -600,7 +1061,7 @@ dump_frame:
         xor     eax, eax
         call    printf@PLT
         mov     eax, 1
-4:      add     rsp, 8
+4:      add     rsp, 24
         pop     r12
         pop     rbx
         ret
@@ -617,11 +1078,60 @@ sdl_fail:
         mov     edi, 1
         call    exit@PLT
 
+# eax = the entry after (edi = 1) or before (edi = -1) the current one in
+# the pool, wrapping
+pool_step:
+        mov     ecx, [rip + pl_preset_cur]
+        mov     rdx, [rip + pl_pool_mask]
+        mov     r8d, NENTRIES
+1:      add     ecx, edi
+        jns     2f
+        mov     ecx, NENTRIES - 1
+2:      cmp     ecx, NENTRIES
+        jb      3f
+        xor     ecx, ecx
+3:      bt      rdx, rcx
+        jc      4f
+        dec     r8d
+        jnz     1b
+4:      mov     eax, ecx
+        ret
+
+# re-apply the current preset with K = edi (clamped to 1..16), keeping the
+# spawn layout and, if it still qualifies, the palette
+retype:
+        push    rbx                     # rsp aligned
+        mov     eax, 1
+        cmp     edi, eax
+        cmovl   edi, eax
+        mov     eax, MAXK
+        cmp     edi, eax
+        cmovg   edi, eax
+        mov     edx, edi
+        mov     edi, [rip + pl_preset_cur]
+        test    edi, edi
+        js      1f
+        lea     rsi, [rip + s_r_types]
+        mov     ecx, KEEP_PALETTE | KEEP_SPAWN
+        call    switch_to
+        pop     rbx
+        ret
+1:      mov     [rip + pl + PL_K], edx  # plain random rules
+        call    pl_random_rules
+        mov     edi, [rip + pl_spawn_cur]
+        call    pl_spawn
+        call    pl_palette_refresh
+        pop     rbx
+        ret
+
 # handle one key, edi = SDL keycode (or a --keys character: '>' / '<' for
-# Right / Left, upper case allowed); returns eax = 1 to quit
+# Right / Left, 'S' for Shift+S, other capitals as lower case); returns
+# eax = 1 to quit
 on_key:
         push    rbx                     # rsp aligned
         mov     ebx, edi
+        cmp     ebx, 'S'
+        je      0f
         lea     eax, [ebx - 'A']
         cmp     eax, 25
         ja      0f
@@ -630,25 +1140,98 @@ on_key:
         cmp     ebx, 27                 # Esc
         jne     1f
         mov     eax, 1
-        jmp     9f
+        jmp     99f
 1:      cmp     ebx, ' '
         jne     2f
         xor     dword ptr [rip + paused], 1
-        jmp     8f
-2:      cmp     ebx, 'r'                # re-roll: same preset, next random numbers
+        jmp     98f
+2:      cmp     ebx, 'r'                # re-roll: same preset and K, new draws
         jne     3f
         mov     edi, [rip + pl_preset_cur]
         test    edi, edi
         js      21f
         lea     rsi, [rip + s_r_reroll]
+        mov     edx, [rip + pl + PL_K]
+        xor     ecx, ecx
         call    switch_to
-        jmp     8f
+        jmp     98f
 21:     call    pl_random_rules
-        jmp     8f
-3:      cmp     ebx, 'n'
+        jmp     98f
+3:      cmp     ebx, 'n'                # respawn, same layout
+        jne     31f
+        mov     edi, [rip + pl_spawn_cur]
+        call    pl_spawn
+        lea     rdi, [rip + s_r_respawn]
+        call    log_event
+        jmp     98f
+31:     cmp     ebx, 's'                # next spawn layout
+        jne     32f
+        mov     edi, [rip + pl_spawn_cur]
+        inc     edi
+        cmp     edi, NSPAWNS
+        jb      311f
+        xor     edi, edi
+311:    call    pl_spawn
+        lea     rdi, [rip + s_r_spawn]
+        call    log_event
+        jmp     98f
+32:     cmp     ebx, 'S'                # previous spawn layout
+        jne     33f
+        mov     edi, [rip + pl_spawn_cur]
+        dec     edi
+        jns     311b
+        mov     edi, NSPAWNS - 1
+        jmp     311b
+33:     cmp     ebx, 'k'                # next palette (qualifying for K)
+        jne     34f
+        mov     edi, 1
+        call    pl_palette_next
+        mov     edi, eax
+        call    pl_palette_set
+        lea     rdi, [rip + s_r_palette]
+        call    log_event
+        jmp     98f
+34:     cmp     ebx, 'p'                # next pool, and a preset from it
+        jne     35f
+        mov     edi, [rip + pl_pool]
+        inc     edi
+        cmp     edi, 3
+        jb      341f
+        xor     edi, edi
+341:    call    pl_pool_set
+        call    pl_preset_pick
+        mov     edi, eax
+        lea     rsi, [rip + s_r_pool]
+        xor     edx, edx
+        xor     ecx, ecx
+        call    switch_to
+        jmp     98f
+35:     cmp     ebx, 'f'                # overlay on/off
+        jne     36f
+        xor     dword ptr [rip + overlay_on], 1
+        cmp     dword ptr [rip + opt_log], 0
+        je      98f
+        call    clock_now
+        lea     rdi, [rip + s_ovl_log]
+        lea     rsi, [rip + s_off]
+        lea     rax, [rip + s_on]
+        cmp     dword ptr [rip + overlay_on], 0
+        cmovne  rsi, rax
+        mov     eax, 1
+        call    printf@PLT
+        jmp     98f
+36:     cmp     ebx, '['
+        jne     37f
+        mov     edi, [rip + pl + PL_K]
+        dec     edi
+        call    retype
+        jmp     98f
+37:     cmp     ebx, ']'
         jne     4f
-        call    pl_random_particles
-        jmp     8f
+        mov     edi, [rip + pl + PL_K]
+        inc     edi
+        call    retype
+        jmp     98f
 4:      cmp     ebx, '+'
         je      41f
         cmp     ebx, '='
@@ -659,7 +1242,7 @@ on_key:
         lea     edi, [edi + edi*4]
         shr     edi, 2                  # n * 5/4
         call    set_particles
-        jmp     8f
+        jmp     98f
 5:      cmp     ebx, '-'
         je      51f
         cmp     ebx, SDLK_KP_MINUS
@@ -672,42 +1255,43 @@ on_key:
         div     ecx                     # n * 4/5
         mov     edi, eax
         call    set_particles
-        jmp     8f
+        jmp     98f
 6:      cmp     ebx, SDLK_RIGHT
         je      61f
         cmp     ebx, '>'
         jne     7f
-61:     mov     edi, [rip + pl_preset_cur]
-        inc     edi                     # -1 -> 0
-        cmp     edi, NPRESETS
-        jb      62f
-        xor     edi, edi
-62:     lea     rsi, [rip + s_r_next]
+61:     mov     edi, 1
+        call    pool_step
+        mov     edi, eax
+        lea     rsi, [rip + s_r_next]
+        xor     edx, edx
+        xor     ecx, ecx
         call    switch_to
-        jmp     8f
+        jmp     98f
 7:      cmp     ebx, SDLK_LEFT
         je      71f
         cmp     ebx, '<'
         jne     72f
-71:     mov     edi, [rip + pl_preset_cur]
-        dec     edi
-        jns     711f
-        mov     edi, NPRESETS - 1
-711:    lea     rsi, [rip + s_r_prev]
+71:     mov     edi, -1
+        call    pool_step
+        mov     edi, eax
+        lea     rsi, [rip + s_r_prev]
+        xor     edx, edx
+        xor     ecx, ecx
         call    switch_to
-        jmp     8f
+        jmp     98f
 72:     cmp     ebx, 'c'                # auto-cycle on/off (needs an interval > 0)
         jne     73f
         vxorpd  xmm0, xmm0, xmm0
         vucomisd xmm0, [rip + opt_interval]
-        jae     8f
+        jae     98f
         xor     dword ptr [rip + cycle_on], 1
         call    clock_now
         vmovsd  [rip + cbuf], xmm0      # scratch
         vaddsd  xmm0, xmm0, [rip + opt_interval]
         vmovsd  [rip + deadline], xmm0
         cmp     dword ptr [rip + opt_log], 0
-        je      8f
+        je      98f
         lea     rdi, [rip + s_cycle_log]
         vmovsd  xmm0, [rip + cbuf]
         lea     rsi, [rip + s_off]
@@ -716,23 +1300,14 @@ on_key:
         cmovne  rsi, rax
         mov     eax, 1
         call    printf@PLT
-        jmp     8f
+        jmp     98f
 73:     lea     eax, [ebx - '1']        # 1-9: type count
         cmp     eax, 8
-        ja      8f
-        inc     eax
-        mov     [rip + opt_k], eax
-        mov     [rip + pl + PL_K], eax
-        mov     edi, [rip + pl_preset_cur]
-        test    edi, edi
-        js      74f
-        lea     rsi, [rip + s_r_types]
-        call    switch_to
-        jmp     8f
-74:     call    pl_random_rules
-        call    pl_random_particles
-8:      xor     eax, eax
-9:      pop     rbx
+        ja      98f
+        lea     edi, [eax + 1]
+        call    retype
+98:     xor     eax, eax
+99:     pop     rbx
         ret
 
 window:
@@ -742,7 +1317,7 @@ window:
         push    r14
         push    r15
         sub     rsp, 64                 # rsp aligned; [rsp] t_title, [rsp+8] step_time, [rsp+16] frames, [rsp+24] steps
-                                        # [rsp+32] t_step, [rsp+40] last clock, [rsp+48] fps, [rsp+56] ms/step
+                                        # [rsp+32] t_step, [rsp+40] last clock
         mov     edi, SDL_INIT_VIDEO
         call    SDL_Init@PLT
         test    eax, eax
@@ -786,6 +1361,8 @@ window:
         vmovsd  [rsp], xmm0
         vxorpd  xmm0, xmm0, xmm0
         vmovsd  [rsp + 8], xmm0
+        vmovsd  [rip + g_fps], xmm0
+        vmovsd  [rip + g_ms], xmm0
         mov     qword ptr [rsp + 16], 0
         mov     qword ptr [rsp + 24], 0
         call    clock_now
@@ -806,7 +1383,13 @@ window:
         cmp     eax, SDL_KEYDOWN
         jne     .Lpoll
         mov     edi, [rip + event + 20]     # keysym.sym
-        call    on_key
+        test    word ptr [rip + event + 24], KMOD_SHIFT
+        jz      0f
+        lea     eax, [edi - 'a']            # Shift+letter -> capital
+        cmp     eax, 25
+        ja      0f
+        sub     edi, 32
+0:      call    on_key
         test    eax, eax
         jnz     .Lquit
         jmp     .Lpoll
@@ -841,7 +1424,13 @@ window:
         mov     esi, [rip + opt_w]
         mov     edx, [rip + opt_h]
         call    pl_render
-        mov     rdi, [rip + tex]
+        cmp     dword ptr [rip + overlay_on], 0
+        je      3f
+        call    cycle_text
+        call    overlay_text
+        mov     rdi, [rip + pixels]
+        call    draw_overlay
+3:      mov     rdi, [rip + tex]
         xor     esi, esi
         mov     rdx, [rip + pixels]
         mov     ecx, [rip + opt_w]
@@ -856,7 +1445,7 @@ window:
         call    SDL_RenderPresent@PLT
         inc     qword ptr [rsp + 16]
 
-        # title every 0.5 s: fps, ms per step
+        # every 0.5 s: fps over the frames presented since, ms per step
         call    now
         vsubsd  xmm1, xmm0, [rsp]
         vucomisd xmm1, [rip + D_HALF]
@@ -864,48 +1453,53 @@ window:
         vmovsd  [rsp], xmm0
         vcvtsi2sd xmm2, xmm2, qword ptr [rsp + 16]
         vdivsd  xmm0, xmm2, xmm1            # fps
-        vxorpd  xmm1, xmm1, xmm1
+        vmovsd  [rip + g_fps], xmm0
         mov     rax, [rsp + 24]
         test    rax, rax
-        jz      3f
+        jz      4f                          # paused: keep the last ms/step
         vcvtsi2sd xmm2, xmm2, rax
         vmovsd  xmm1, [rsp + 8]
         vdivsd  xmm1, xmm1, xmm2
         vmulsd  xmm1, xmm1, [rip + D_1E3]   # ms/step
-3:      mov     qword ptr [rsp + 16], 0
+        vmovsd  [rip + g_ms], xmm1
+4:      mov     qword ptr [rsp + 16], 0
         mov     qword ptr [rsp + 24], 0
         mov     qword ptr [rsp + 8], 0
-        vmovsd  [rsp + 48], xmm0
-        vmovsd  [rsp + 56], xmm1
         call    cycle_text
-        call    simd_name
+        call    spawn_name
         mov     r12, rax
         lea     rax, [rip + s_empty]
         lea     r13, [rip + s_paused]
         cmp     dword ptr [rip + paused], 0
         cmove   r13, rax
-        call    preset_name
-        mov     rcx, rax
-        mov     r8d, [rip + pl_preset_cur]
-        inc     r8d
-        lea     rdi, [rip + title]
-        mov     esi, 256
-        lea     rdx, [rip + s_title]
-        lea     r9, [rip + cbuf]
-        push    rax                     # pad
-        push    r13
-        push    r12
-        mov     eax, [rip + pl + PL_NTHREADS]
+        call    preset_list
+        mov     r14, rax
+        mov     r15d, ecx
+        mov     ebx, edx
+        push    r13                     # pad
+        push    r13                     # paused
+        call    palette_name
         push    rax
+        push    r12                     # spawn
         mov     eax, [rip + pl + PL_K]
         push    rax
         mov     eax, [rip + pl + PL_N]
         push    rax
-        vmovsd  xmm0, [rsp + 48 + 48]
-        vmovsd  xmm1, [rsp + 56 + 48]
+        lea     rax, [rip + cbuf]
+        push    rax
+        push    rbx                     # list size
+        call    preset_name
+        mov     rcx, rax
+        lea     rdi, [rip + title]
+        mov     esi, 512
+        lea     rdx, [rip + s_title]
+        mov     r8, r14
+        mov     r9d, r15d
+        vmovsd  xmm0, [rip + g_fps]
+        vmovsd  xmm1, [rip + g_ms]
         mov     eax, 2
         call    snprintf@PLT
-        add     rsp, 48
+        add     rsp, 64
         mov     rdi, [rip + win]
         lea     rsi, [rip + title]
         call    SDL_SetWindowTitle@PLT
@@ -928,46 +1522,218 @@ window:
         pop     rbx
         ret
 
+# ------------------------------------------------------------------ lists
+list_presets:
+        push    rbx
+        push    r12
+        push    r13                     # rsp aligned
+        xor     ebx, ebx
+1:      mov     edi, ebx
+        call    pl_entry_types
+        test    eax, eax
+        jz      2f
+        lea     rdi, [rip + kbuf]
+        lea     rsi, [rip + s_kfmt]
+        mov     edx, eax
+        xor     eax, eax
+        call    sprintf@PLT
+        lea     r13, [rip + kbuf]
+        jmp     3f
+2:      lea     r13, [rip + s_kdraw]
+3:      mov     edi, ebx
+        call    pl_entry_rule
+        shl     eax, 5
+        lea     r12, [rip + pl_preset_phys]
+        add     r12, rax
+        mov     edi, ebx
+        call    pl_entry_name
+        mov     rdx, rax
+        lea     rcx, [rip + s_curated]
+        lea     rax, [rip + s_generated]
+        cmp     ebx, NCURATED
+        cmovae  rcx, rax
+        mov     r8, r13
+        lea     rdi, [rip + s_listfmt]
+        mov     esi, ebx
+        vcvtss2sd xmm0, xmm0, [r12]
+        vcvtss2sd xmm1, xmm1, [r12 + 4]
+        vcvtss2sd xmm2, xmm2, [r12 + 8]
+        vcvtss2sd xmm3, xmm3, [r12 + 12]
+        vcvtss2sd xmm4, xmm4, [r12 + 16]
+        vcvtss2sd xmm5, xmm5, [r12 + 20]
+        vcvtss2sd xmm6, xmm6, [r12 + 24]
+        mov     eax, 7
+        call    printf@PLT
+        inc     ebx
+        cmp     ebx, NENTRIES
+        jb      1b
+        pop     r13
+        pop     r12
+        pop     rbx
+        ret
+
+list_spawns:
+        push    rbx
+        push    r12
+        push    r13                     # rsp aligned
+        xor     ebx, ebx
+1:      lea     rcx, [rip + s_notpat]
+        lea     rax, [rip + s_inpat]
+        cmp     ebx, 2                  # ring
+        je      2f
+        cmp     ebx, 7                  # spiral
+        je      2f
+        cmp     ebx, 11                 # line_mixed
+        je      2f
+        cmp     ebx, 16                 # random
+        je      2f
+        mov     rcx, rax
+2:      lea     rax, [rip + pl_spawn_names]
+        mov     rdx, [rax + rbx*8]
+        lea     rdi, [rip + s_lspfmt]
+        mov     esi, ebx
+        xor     eax, eax
+        call    printf@PLT
+        inc     ebx
+        cmp     ebx, NSPAWNS
+        jb      1b
+        pop     r13
+        pop     r12
+        pop     rbx
+        ret
+
+# each palette with the type counts it qualifies for, e.g. "2-9" or "2-16"
+list_palettes:
+        push    rbx
+        push    r12
+        push    r13
+        push    r14
+        push    r15                     # rsp aligned
+        xor     ebx, ebx
+1:      cmp     ebx, [rip + pl_npalettes]
+        jae     9f
+        mov     r12d, 1                 # largest K such that 2..K all qualify
+2:      lea     esi, [r12d + 1]
+        cmp     esi, MAXK
+        ja      3f
+        mov     edi, ebx
+        call    pl_palette_ok
+        test    eax, eax
+        jz      3f
+        inc     r12d
+        jmp     2b
+3:      lea     rdi, [rip + kbuf]
+        mov     esi, 64
+        lea     rdx, [rip + s_krange]
+        mov     ecx, r12d
+        lea     rax, [rip + s_knone]
+        cmp     r12d, 1
+        jne     31f
+        mov     rdx, rax
+31:     xor     eax, eax
+        call    snprintf@PLT
+        lea     rax, [rip + pl_palette_cols]
+        mov     rax, [rax + rbx*8]
+        mov     ecx, [rax]
+        lea     rax, [rip + pl_palette_names]
+        mov     rdx, [rax + rbx*8]
+        lea     rdi, [rip + s_lpalfmt]
+        mov     esi, ebx
+        lea     r8, [rip + kbuf]
+        xor     eax, eax
+        call    printf@PLT
+        inc     ebx
+        jmp     1b
+9:      pop     r15
+        pop     r14
+        pop     r13
+        pop     r12
+        pop     rbx
+        ret
+
+        .section .rodata
+s_krange:    .asciz "2..%u"
+s_knone:     .asciz "none (only 1)"
+        .text
+
 # ------------------------------------------------------------------ main
         .globl main
 main:
         push    rbx                     # rsp aligned
         call    parse_args
 
-        # --list-presets
         cmp     dword ptr [rip + opt_list], 0
+        je      11f
+        call    list_presets
+        jmp     19f
+11:     cmp     dword ptr [rip + opt_lspawns], 0
         je      12f
-        xor     ebx, ebx
-11:     lea     rdi, [rip + s_listfmt]
-        mov     esi, ebx
-        lea     rax, [rip + pl_preset_names]
-        mov     rdx, [rax + rbx*8]
-        xor     eax, eax
-        call    printf@PLT
-        inc     ebx
-        cmp     ebx, NPRESETS
-        jb      11b
-        xor     edi, edi
+        call    list_spawns
+        jmp     19f
+12:     cmp     dword ptr [rip + opt_lpal], 0
+        je      13f
+        lea     rax, [rip + pl]                 # qualification needs pl.K only
+        mov     dword ptr [rax + PL_K], 2
+        call    list_palettes
+19:     xor     edi, edi
         call    exit@PLT
 
-        # --preset NAME
-12:     mov     rdi, [rip + opt_preset]
+        # --pool, --preset, --spawn, --palette
+13:     mov     rbx, [rip + opt_pool]
+        test    rbx, rbx
+        jz      132f
+        xor     ecx, ecx
+131:    lea     rax, [rip + pl_pool_names]
+        mov     rsi, [rax + rcx*8]
+        mov     rdi, rbx
+        push    rcx
+        push    rcx
+        call    strcasecmp@PLT
+        pop     rcx
+        pop     rcx
+        test    eax, eax
+        jz      133f
+        inc     ecx
+        cmp     ecx, 3
+        jb      131b
+        lea     rdi, [rip + s_badpool]
+        mov     rsi, rbx
+        call    die_arg
+133:    mov     edi, ecx
+        call    pl_pool_set
+132:    mov     rdi, [rip + opt_preset]
         test    rdi, rdi
         jz      14f
-        call    pl_preset_find
+        call    pl_entry_find
         mov     [rip + start_preset], eax
         test    eax, eax
         jns     14f
-        mov     rdi, [rip + stderr]
-        lea     rsi, [rip + s_badpreset]
-        mov     rdx, [rip + opt_preset]
-        xor     eax, eax
-        call    fprintf@PLT
-        mov     edi, 2
-        call    exit@PLT
+        lea     rdi, [rip + s_badpreset]
+        mov     rsi, [rip + opt_preset]
+        call    die_arg
+14:     mov     rdi, [rip + opt_spawn]
+        test    rdi, rdi
+        jz      141f
+        call    pl_spawn_find
+        mov     [rip + spawn_pin], eax
+        test    eax, eax
+        jns     141f
+        lea     rdi, [rip + s_badspawn]
+        mov     rsi, [rip + opt_spawn]
+        call    die_arg
+141:    mov     rdi, [rip + opt_palette]
+        test    rdi, rdi
+        jz      142f
+        call    pl_palette_find
+        mov     [rip + palette_pin], eax
+        test    eax, eax
+        jns     142f
+        lea     rdi, [rip + s_badpal]
+        mov     rsi, [rip + opt_palette]
+        call    die_arg
 
         # auto-cycle unless --no-cycle or --interval 0; headless logs switches
-14:     vxorpd  xmm0, xmm0, xmm0
+142:    vxorpd  xmm0, xmm0, xmm0
         vucomisd xmm0, [rip + opt_interval]
         jae     15f
         cmp     dword ptr [rip + opt_nocycle], 0
@@ -984,9 +1750,7 @@ main:
         jz      usage
         cmp     eax, MAX_PARTICLES
         ja      usage
-        mov     eax, [rip + opt_k]
-        dec     eax
-        cmp     eax, MAXK - 1
+        cmp     dword ptr [rip + opt_k], MAXK
         ja      usage
         cmp     dword ptr [rip + opt_w], 256
         jb      usage
@@ -1040,6 +1804,7 @@ main:
         mov     edi, 1
         mov     eax, [rip + opt_bench]
         or      eax, [rip + opt_headless]
+        or      eax, [rip + opt_benchr]
         or      rax, [rip + opt_dump]
         jnz     5f
         mov     edi, SC_NPROCESSORS_ONLN
@@ -1065,9 +1830,13 @@ main:
         jmp     50b
 
 51:     cmp     dword ptr [rip + opt_bench], 0
-        je      6f
+        je      52f
         call    bench
         xor     eax, eax
+        jmp     9f
+52:     cmp     dword ptr [rip + opt_benchr], 0
+        je      6f
+        call    bench_render
         jmp     9f
 6:      cmp     qword ptr [rip + opt_dump], 0
         je      7f
