@@ -151,6 +151,16 @@ awk '$3 == "start" || $3 == "timer" { split($0, a, "maxr "); split(a[2], b, " ")
      END { exit bad || n < 50 }' "$LOG" \
     && ok "switch log: max radius and grid rebuilt on every switch" || fail "maxr in log"
 
+# 11b. Space = next scene now: each press switches (reason "space"), never the
+# same preset twice in a row, and Z (pause) does not switch
+$BIN $COMMON --preset Shells --keys '      ' --no-cycle --headless 4 > "$LOG"
+n=$(grep -c ' space  ->' "$LOG")
+rep=$(awk '$3 == "space" { if ($5 == last) r++; last = $5 } END { print r + 0 }' "$LOG")
+[ "$n" -eq 6 ] && [ "$rep" -eq 0 ] && ok "Space: 6 presses -> 6 scene switches, none repeated back to back" || fail "Space: $n switches, $rep repeats"
+$BIN $COMMON --preset Shells --keys 'z' --no-cycle --headless 4 > "$LOG"
+n=$(grep -c ' space  ->' "$LOG")
+[ "$n" -eq 0 ] && ok "Z: pause key does not switch scenes" || fail "Z switched $n times"
+
 # 12. unknown names are rejected
 for opt in "--preset nosuchpreset" "--spawn nosuch" "--palette nosuch" "--pool nosuch"; do
     if $BIN $opt --headless 1 > /dev/null 2>&1; then fail "$opt accepted"; else ok "$opt rejected"; fi
