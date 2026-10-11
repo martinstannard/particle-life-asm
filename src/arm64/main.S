@@ -88,6 +88,7 @@ s_present:   .asciz "--present"
 s_benchp:    .asciz "--bench-present"
 s_r_start:   .asciz "start"
 s_r_timer:   .asciz "timer"
+s_r_space:   .asciz "space"
 s_r_next:    .asciz "next"
 s_r_prev:    .asciz "prev"
 s_r_reroll:  .asciz "reroll"
@@ -156,7 +157,7 @@ s_usage:     .ascii "usage: particle_life [--particles N] [--types K(1-16), pins
              .ascii "         [--log-switches]\n"
              .ascii "         [--keys STR]  feed key presses (e.g. \"r9+\") to the key handler first;\n"
              .ascii "                       '>' '<' = Right Left, 'S' = Shift+S\n"
-             .ascii "keys: Space pause, Right/Left next/previous preset, P pool, C auto-cycle,\n"
+             .ascii "keys: Space next scene, Z/Return pause, Right/Left next/previous preset, P pool, C auto-cycle,\n"
              .ascii "      R re-roll, S/Shift+S next/previous spawn, N respawn, K palette,\n"
              .ascii "      [ ] fewer/more types, 1-9 types, +/- particles, F overlay, Esc quit\n"
              .byte 0
@@ -1144,9 +1145,19 @@ on_key:
         b.ne    1f
         mov     w0, #1
         LEAVE2
-1:      cmp     w19, #' '
+1:      cmp     w19, #' '                       // next scene: same pick as the timer
+        b.ne    12f
+        bl      pl_preset_pick
+        ADR_L   x1, s_r_space
+        mov     w2, #0
+        mov     w3, #0
+        bl      switch_to
+        b       98f
+12:     cmp     w19, #'z'                       // pause (Z or Return)
+        b.eq    13f
+        cmp     w19, #13
         b.ne    2f
-        LDW     w9, paused
+13:     LDW     w9, paused
         eor     w9, w9, #1
         STW     w9, paused
         b       98f
