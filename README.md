@@ -5,7 +5,9 @@ assembly (GNU `as`, `.intel_syntax noprefix`, ~8 600 lines): simulation
 core, spawn layouts, rule presets, palettes, software renderer with a text
 overlay, SDL2 window loop, argument parsing and benchmark. C appears only in
 the reference implementation, the test harnesses and one contact-sheet
-helper.
+helper. A port of all of it to AArch64 / NEON for the Raspberry Pi 4 lives
+in `src/arm64/` (see [ARM64](#arm64-raspberry-pi-4); assembled and
+reviewed, not yet run).
 
 Every 20 seconds the window shows a new **scene**:
 
@@ -53,6 +55,7 @@ make run             # window, 20k particles, 1600x900, new scene every 20 s
 make run ARGS="--interval 5 --pool all"
 make test            # spawns and presets vs pl-box, asm vs C reference, overlay, cycling
 make bench           # headless, 10k/50k/200k particles, 1 and 8 threads
+make check-arm64     # assemble + symbol-check the AArch64 port with clang (see ARM64)
 make bench-ref       # C reference, gcc -O3 -march=native
 make bench-ref-clang # C reference, clang -O3 -ffast-math -march=native
 ```
@@ -464,6 +467,9 @@ src/font.S          8x8 bitmap font (hand-drawn glyphs)
 src/render.S        software renderer, overlay text, PPM writer
 src/main.S          main: options, scenes and switching, bench, render bench,
                     frame dump, SDL2 window, keys, overlay text, timer
+src/arm64/*.S       the AArch64 / NEON port of all of the above (one NEON
+                    kernel, acquire/release barriers, --rotate/--fullscreen/
+                    --present/--bench-present); macros.inc: its helper macros
 ref/ref.c           C reference: same grid step + O(N^2) pl-box-style step
 ref/pl_state.h      C view of `pl` and the asm entry points
 tests/test_step.c       asm vs reference comparison
@@ -471,6 +477,8 @@ tests/test_spawns.c     spawn layouts vs pl-box (tests/plbox_spawns.txt), invari
 tests/test_presets.c    presets vs pl-box, ranges, bag, switches and K = 2..16 scenes
 tests/test_overlay.c    overlay text pixels
 tests/test_cycle.sh     cycling, pools, pins and keys on the real binary (headless)
+tests/test_threads.c    N worker threads vs 1 thread, bit-identical after every step
+tests/sdl_stub.c        SDL2 stand-ins for the cross-built AArch64 test binary
 tests/plbox_ref.txt     attraction matrices printed by pl-box itself
 tests/plbox_spawns.txt  spawn hashes printed by pl-box itself
 tools/plbox_dump/       runs pl-box's code (BIN=spawns for the spawn reference)
@@ -478,6 +486,8 @@ tools/contact_sheet.sh  docs/presets.png
 tools/spawn_sheet.sh    docs/spawns.png
 tools/palette_sheet.sh  docs/palettes.png
 tools/window_titles.sh  real-window titles of this run's window only
+tools/pi.sh             rsync + build + test + bench on the Raspberry Pi over SSH
+docs/PI.md              step by step on the Pi
 ```
 
 ### Memory layout
@@ -818,6 +828,185 @@ Switch cost at 200 000 particles: 12 ms mean, 7–28 ms by layout (see
 [Cost of a switch](#cost-of-a-switch)). Overlay: 0.05 ms per frame (see
 [Overlay](#overlay)).
 
+## ARM64 (Raspberry Pi 4)
+
+The whole program also exists as hand-written AArch64 assembly
+(`src/arm64/*.S`, GNU `as`, ARMv8.0-A + Advanced SIMD, ~7 700 lines), for a
+Raspberry Pi 4 Model B (Cortex-A72, 4 cores, no SVE, no dot product, no LSE
+atomics) driving the Waveshare 5.5" 1080×1920 AMOLED. It is a port of the
+x86 assembly, file by file, with the same features (presets, curated list,
+pools, spawns, palettes, type counts, overlay, keys, options). The C
+reference (`ref/`) and every test (`tests/`) are shared: the same suites run
+against either build. The font and palette tables (`src/font.S`,
+`src/palettes_data.S`) are shared as they are pure data.
+
+**Status: assembled and symbol-checked only. The AArch64 code has not been
+executed yet** (see [What was verified](#what-was-verified-on-arm64)). Run
+`make test` on the Pi first ([docs/PI.md](docs/PI.md)).
+
+### Build
+
+```sh
+make check-arm64                    # anywhere with clang: assemble all AArch64 files
+                                    # (all kernel variants), link-check symbols
+make ARCH=aarch64                   # on x86: cross build with aarch64-linux-gnu-gcc
+make test ARCH=aarch64              #   ... tests under qemu-aarch64 (static, SDL stubbed)
+# on the Pi (ARCH defaults to the host, so ARCH=aarch64 is optional there):
+make -j4 && make test && make bench
+make run-panel                      # 1080x1920 fullscreen (add ARGS="--rotate 90" if sideways)
+tools/pi.sh pi@<host> all           # from the desktop: rsync, build, test, bench on the Pi
+```
+
+Output goes to `build-arm64/`. Kernel variants build side by side, e.g.
+`make bench NEWTON=1 BUILD=build-arm64-newton1`.
+
+### Design differences from x86
+
+| | x86-64 | AArch64 |
+|---|---|---|
+| vector width | 8 (AVX2) / 16 (AVX-512) floats | 4 floats (128-bit NEON) |
+| kernels | AVX2 K≤8, AVX2 K≤16, AVX-512 | one NEON kernel for every K ≤ 16 |
+| per-pair parameters | `vpermps` from table rows held in registers | gathered: one 16-byte entry {b0, ir, c1, 4as} per lane from an interleaved table `pl_ptab[ti][tj]` (4 `ldr q`), then a 4×4 `trn1`/`trn2` transpose |
+| 1/d | `rsqrtps`/`rsqrt14ps` (12/14 bits) + 1 Newton step | `frsqrte` (8 bits) + 2 `frsqrts` steps (`NEWTON=1`: one step) |
+| d² > 0 | + 1e-8 in the FMA | `orr #1` on the bits (≤ 1 ulp), saves a register; d² = 0 becomes the denormal 2^-149, so the kernel clears FPCR.FZ on entry and restores it on exit |
+| tails | masked lanes (AVX-512) / and-mask (AVX2) | dx = dy = 0 in lanes past the range (mask table), so they add exactly 0 |
+| pipelining | AVX-512: one stream over all ranges, 2 stages | the same: stream of 4-lane vectors over all ranges of *i*, stage A (loads, d², 1/d, gather) of vector n+1 next to stage B (transpose, force, accumulate) of vector n; `KPIPE=0` builds the plain loop |
+| prefetch | hardware | `prfm pldl1keep` at the end of every neighbour range when a cell starts (where the next cell's ranges will end), on top of the hardware prefetcher |
+| atomics, barriers | `lock xadd`, TSO | `ldaxr`/`stlxr` (no LSE on ARMv8.0), `stlr`/`ldar`, see below |
+| threads in the window | logical CPUs / 2 (SMT) | all online CPUs (4 on the Pi; no SMT) |
+| SIMD selection | CPUID/XGETBV, `--simd avx2\|avx512` | `getauxval(AT_HWCAP)` & HWCAP_ASIMD, `--simd neon` |
+
+Why a gather instead of x86's in-register lookup: NEON's equivalent of
+`vpermps` is `tbl` on bytes. For K ≤ 16 every parameter would need a
+4-register `tbl` (64-byte table), plus building byte indices from the types,
+four times per vector. In LLVM's Cortex-A72 scheduling model that is
+~18 FP-pipe cycles per vector, against ~4 for four loads and the transpose
+(the loads use the otherwise idle load pipe). The interleaved table also
+frees the 16 registers that four table rows would hold, which the two-stage
+pipeline needs, and it treats K = 2 and K = 16 alike.
+
+**Memory ordering.** x86 is TSO; the AArch64 port makes every hand-off
+explicit (`src/arm64/threads.S` header):
+
+- spin barrier: each arrival increments the count with an `ldaxr`/`stlxr`
+  loop (acquire + release), so it publishes the thread's writes from the
+  phase. The last thread to arrive has therefore acquired everyone's writes.
+  It resets the count and publishes a new generation with `stlr`, and the
+  waiters spin on `ldar` of the generation. Release/acquire is cumulative on
+  ARMv8 (other-multi-copy atomic), so after the barrier every thread sees
+  every write made before it;
+- the generation is read with `ldar` before arriving. The arrival's `stlxr`
+  is ordered after that read, so a waiter cannot read the generation it is
+  about to wait for;
+- the cell-chunk counter is a relaxed `ldxr`/`stxr` fetch-add: it only
+  hands out work, and the kernels' results are published by the barrier
+  after the force pass;
+- each step starts with `pthread_barrier_wait`, which is a full barrier.
+
+`tests/test_threads.c` (new, run by `make test` on both architectures)
+checks this: 4 threads (`THREADS`) against 1 thread, a hash of the whole
+particle state after each of 300 steps, 5 cases. It must be bit-identical,
+since every particle's force sum and the sort order do not depend on which
+thread computes them. Under qemu-user on an x86 host the guest runs with
+x86's strong ordering, so only real hardware can expose an ordering bug.
+
+**Threads** are not pinned. The dynamic cell chunks already absorb a thread
+that loses its core for a while. On a 4-core Pi the main thread also renders
+and presents, and the desktop compositor needs a core now and then, so the
+scheduler is left to place threads. `--threads N` still overrides the
+default of 4.
+
+**Display.** The panel is 1080×1920 portrait. `--width 1080 --height 1920`
+sets the world (drawn 1:1). `--fullscreen` uses
+`SDL_WINDOW_FULLSCREEN_DESKTOP` and hides the cursor. `--rotate 90|180|270`
+rotates the finished picture **when presenting**, with `SDL_RenderCopyEx`.
+The GPU samples the texture rotated, so rotation costs no CPU time. Rotating
+in the renderer instead would cost a full 8 MB read+write pass per frame, or
+a rotated plot of every dot plus a rotated overlay. With 90/270 the window is
+height×width; the destination rectangle is recomputed from the renderer's
+output size every frame.
+
+Presenting 1080×1920 moves 8.3 MB per frame. Two paths, chosen with
+`--present`:
+
+- `texture` (default): a streaming ARGB8888 texture. `SDL_UpdateTexture`
+  copies the frame to the GPU driver (on the Pi 4's V3D, Mesa also tiles it
+  on the CPU). The GPU then scales and rotates it, and vsync works;
+- `surface`: SDL's window surface. When its format is 32-bit XRGB/ARGB at
+  the world size, the frame is rendered straight into it (no extra copy);
+  otherwise it is blitted (scaled if needed). Then `SDL_UpdateWindowSurface`.
+  No rotation.
+
+The window measures both stages and shows them in the overlay
+(`texture: upload x ms  present y ms`); the averages are printed on exit.
+`--bench-present N` draws N frames without stepping and prints render,
+upload and present time per frame. It is the command to run on the Pi for
+both paths (docs/PI.md, step 4). **Not measured yet.** Estimate (unmeasured,
+from typical Pi 4 copy bandwidth of 2–4 GB/s): clearing and drawing the
+8 MB buffer ~3 ms, the texture upload 4–10 ms, so 8–15 ms of a 33 ms frame
+at 30 fps. That is why rendering and present are timed separately from the
+step.
+
+### Kernel speed: estimate, not a measurement
+
+Without the hardware, the inner loop was analysed with `llvm-mca`
+(`-mcpu=cortex-a72`; LLVM uses its Cortex-A57 model, whose FP latencies are
+somewhat longer than the A72's). The steady-state stream loop (common path,
+two vectors = 8 pairs per iteration) was extracted from the assembled
+object:
+
+| variant | cycles / 8 pairs (simulated) | resource bound | cycles per pair |
+|---|---:|---:|---:|
+| `KPIPE=1 NEWTON=2` (default) | 79.6 | 58 | 9.9 |
+| `KPIPE=1 NEWTON=1` | 70.1 | 52 | 8.8 |
+| `KPIPE=0 NEWTON=2` (plain loop) | 103 | 58 | 12.9 |
+| `KPIPE=0 NEWTON=1` | 88 | 52 | 11.0 |
+
+The model is latency-bound: one vector's dependency chain (load → d² →
+three rounds of `frsqrte`/`frsqrts` → force → accumulate) is ~80 cycles in
+the A57 model. The two-stage pipeline overlaps two chains, and the
+reorder buffer limits how much more fits. On the A72's shorter latencies the
+gap to the resource bound should be smaller. A third pipeline stage is the
+next thing to try on hardware. It needs a third register set, which only
+fits if the gather moves to `ld4`-lane loads.
+
+Particle count at 30 fps on the panel (**estimate**). Per particle-step:
+~155 candidate pairs at the default density (10 000 particles per
+1920×1080, about the panel's area). That is ~160 vector lanes × ~10 cycles,
+plus ~150 cycles of per-particle overhead (range switches, integration,
+bin), so ~1.8k cycles, or 1.2 µs at 1.5 GHz on one core, ~0.35 µs on 4.
+Candidates grow with density, so on the fixed 1080×1920 panel the step time
+grows with N². It is ~3.5 ms per step at 10 000 particles, ~8 ms at
+15 000, ~13 ms at 20 000. With render + present taking 8–15 ms of the
+33 ms frame:
+
+- `--steps-per-frame 2` (default): **about 15 000–18 000 particles at
+  30 fps**;
+- `--steps-per-frame 1`: about 20 000–25 000;
+- curated presets (max radius 28–45 instead of 33–70) need ~40% less work
+  per particle, so ~20% more particles.
+
+`make bench` on the Pi gives the real ns per particle-step to put into this
+estimate.
+
+### What was verified on ARM64
+
+| check | how | result |
+|---|---|---|
+| every AArch64 file assembles, in all four kernel variants | `make check-arm64` (clang 22, `--target=aarch64-linux-gnu`) | passes |
+| no internal symbol missing, nothing undefined except libc / libm / pthread / SDL2 | `ld.lld -r` of all objects + `llvm-nm -u` (same target) | passes |
+| no `.set` constant silently redefined | same target | passes (it caught a real bug, see below) |
+| exported symbols match what the shared tests and C reference use | `nm` of x86 vs AArch64 objects | only the kernel names differ, handled in `ref/pl_state.h` |
+| logic | line-by-line review of each file against its x86 original (three independent passes) | fixed: `S_K` defined twice in spawn.S (8 of 18 layouts would have read the type count from the wrong offset), three window-code issues, the kernel's dependence on flush-to-zero being off, a cross-object conditional branch |
+| x86 build unchanged | `make test` on x86 after every change | all suites pass, including the new thread test with 8 threads |
+| **tests under qemu** | `make test ARCH=aarch64` | **not run**: `aarch64-linux-gnu-gcc` and `qemu-aarch64` are not installed on this machine |
+| **tests, bench, window on the Pi** | docs/PI.md | **not run**: no access to the Pi yet |
+
+So the AArch64 logic is **untested**. It has never executed. The first
+`make test` on the Pi (or under qemu) is its first run, and bugs that review
+missed will show up there. The tests are designed to localise them: the
+first failing suite and case name the function.
+
 ## What was tested and what not
 
 - `make test` passes: step vs reference, spawns vs pl-box, overlay pixels,
@@ -869,4 +1058,5 @@ Switch cost at 200 000 particles: 12 ms mean, 7–28 ms by layout (see
 - AVX-512 always keeps the Newton step on `rsqrt14`.
 - Up to 16 types (one zmm table row).
 - Binning is serial when running single-threaded (~7% of the step).
-- Linux x86-64 only (SysV ABI, glibc, PIE).
+- Linux only (glibc, PIE): x86-64 (SysV ABI) and AArch64 (AAPCS64). The
+  AArch64 build has not been run yet (see [ARM64](#arm64-raspberry-pi-4)).
