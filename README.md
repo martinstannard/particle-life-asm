@@ -103,6 +103,7 @@ particle_life [--particles N] [--seed S] [--width W] [--height H]
               [--headless FRAMES [--fake-clock DT]]     window frame loop without a window
               [--log-switches]                          print a line per switch
               [--keys STR]                              feed key presses to the key handler first
+              [--touches STR]                           feed finger events to the gesture recogniser first
 ```
 
 | key | action |
@@ -122,11 +123,96 @@ particle_life [--particles N] [--seed S] [--width W] [--height H]
 | Z / Return | pause (also holds the countdown) |
 | Esc | quit |
 
+Seven of these also have a touch gesture (see [Touch control](#touch-control)):
+Space = tap, R = long press, Right / Left = swipe right-to-left /
+left-to-right, K = swipe up, F = swipe down, Z = two-finger tap, Esc = tap
+in the top-left corner.
+
 `[`, `]`, 1–9 and S change the current scene only: the next automatic
 switch picks the preset's own type count and a spawn layout again, unless
 `--types` / `--spawn` pin them. In `--keys`, `>`/`<` stand for Right/Left
 and `S` for Shift+S.
 
+### Touch control
+
+The Pi's 1080x1920 panel (Waveshare, USB HID multitouch `0712:000a`) is the
+installation's only input, so the window also reads finger events. A small
+recogniser (`on_touch` in `src/main.S` and `src/arm64/main.S`) follows one
+gesture from the first finger down to the last finger up and then runs the
+matching key through the key handler (`on_key`). Every action has a single
+implementation, and the exit tap returns "quit" the way Esc does.
+
+| gesture | rule | action (key) |
+|---|---|---|
+| tap | one finger, travel < 0.04, held < 700 ms, outside the exit corner | next scene (Space) |
+| long press | one finger, travel < 0.04, held ≥ 700 ms | re-roll (R) |
+| swipe right to left | one finger, horizontal travel ≥ 0.15 and larger than the vertical | next preset (Right) |
+| swipe left to right | the same, the other way | previous preset (Left) |
+| swipe up | one finger, vertical travel ≥ 0.15 and larger than the horizontal | next palette (K) |
+| swipe down | the same, downwards | overlay on/off (F) |
+| two-finger tap | two or more fingers down at some point, travel < 0.04, held < 700 ms | pause (Z) |
+| exit tap | a tap that starts at x < 0.12 and y < 0.05 (top-left corner) | quit (Esc) |
+
+How the recogniser measures:
+
+- **Coordinates** are SDL's normalised finger positions, 0..1 across the
+  window, with y growing downwards. Travel is measured on the first finger
+  (start to last position), on its larger axis. The two-finger tap uses the
+  same travel and time limits as a tap. Anything else, such as a travel
+  between 0.04 and 0.15 or two fingers held long, is logged as
+  `unrecognised -> none` and does nothing.
+- **Time** comes from SDL's event timestamps (ms), not the clock.
+- **Ignored input:** an up or move of a finger that is not down, a second
+  down of a finger that is already down, more than 10 fingers, and
+  `SDL_TOUCH_MOUSEID` events (touch synthesised from the mouse). SDL also
+  synthesises mouse events from touch. The program ignores those, as it
+  ignores all mouse events.
+- **Tuning:** the thresholds are `T_TAP_MOVE`, `T_SWIPE`, `T_EXIT_X`,
+  `T_EXIT_Y` and `T_LONG_MS`, data at the top of both `main.S` files.
+
+**How SDL reports touch.** SDL2 (2.32) on X11, with XInput2 multitouch,
+delivers `SDL_FINGERDOWN` (0x700), `SDL_FINGERMOTION` (0x701) and
+`SDL_FINGERUP` (0x702) as an `SDL_TouchFingerEvent`: type u32 @0,
+timestamp u32 @4, touchId s64 @8, fingerId s64 @16, x f32 @24, y f32 @28,
+dx @32, dy @36, pressure @40 (checked against `SDL_events.h`). To check
+that the kernel sees the panel:
+
+```sh
+grep -A4 Waveshare /proc/bus/input/devices    # handlers: mouse0 event4
+```
+
+**Testing without a panel.** `--touches STR` feeds a script of finger
+events to the same recogniser before the frame loop, the way `--keys` feeds
+the key handler. Each event is `d`, `m` or `u` (down, move, up), then `X,Y`,
+then `@MS` (the timestamp), then optionally `#ID` (the finger id, default
+0). Events are separated by spaces. With `--log-switches` every gesture is
+printed, followed by the line of the action it ran:
+
+```
+$ particle_life --preset Shells --no-cycle --log-switches --headless 1 --fake-clock 0.5 \
+      --touches "d0.6,0.5@0 m0.5,0.5@40 u0.4,0.5@120  d0.5,0.5@500 d0.6,0.5@520#1 u0.5,0.5@600 u0.6,0.5@610#1"
+    0.000 s  start  ->  3 Shells ...
+    0.000 s  touch: swipe-left -> next-preset
+    0.000 s  next   ->  4 Hub&Spokes ...
+    0.000 s  touch: two-finger-tap -> pause
+```
+
+An exit tap in `--touches` ends the program right there, with status 0.
+`tests/test_cycle.sh` section 13 covers every row of the table, each
+threshold just below and just above (travel 0.039 / 0.041, 699 / 700 ms,
+swipe 0.149 / 0.151, the corner edges), two fingers lifting in either
+order, two fingers held or moved, an up without a down, the quit, and
+malformed scripts. It passes on x86-64 and on the Pi.
+
+**Untested on the real panel.** No finger has touched the panel with this
+build. Two things are not yet known:
+
+- Whether SDL on the Pi's X session gets the panel as a multitouch device
+  (XInput2 touch events) or only as a pointer. In the second case only the
+  synthesised mouse events arrive and the gestures do nothing.
+- Which way the axes point. They are the window's, so with `--rotate 90` /
+  `270` (window and picture at right angles) or a rotated X screen, the
+  swipe directions and the exit corner follow the window, not the picture.
 The window title carries the same information as the overlay, e.g.
 
 ```
@@ -1117,6 +1203,8 @@ suite and case name the function.
   at start-up, fps and step time. I did not look at the window contents.
   The visual check is the `--dump-frame` output (with `--overlay` for the
   overlay), which goes through the same `pl_render` and `pl_draw_text`.
+- Touch gestures were tested only through `--touches` (headless, the
+  same recogniser). They have not been tried on the real panel.
 - Key presses were not sent to the real window, to avoid injecting input
   into the desktop. Every key except Space and Esc goes through the same
   handler that `--keys` drives headlessly, and the cycle test exercises

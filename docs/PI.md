@@ -154,8 +154,22 @@ DISPLAY=:0 ./build-arm64/particle_life ...
 SDL_VIDEODRIVER=kmsdrm ./build-arm64/particle_life ...
 ```
 
-Keys are the same as on x86 (README): Space pause, Right/Left preset, R
-re-roll, S spawn, K palette, [ ] types, +/- particles, F overlay, Esc quit.
+Keys are the same as on x86 (README): Space next scene, Z pause, Right/Left
+preset, R re-roll, S spawn, K palette, [ ] types, +/- particles, F overlay,
+Esc quit.
+
+Touch: the panel (Waveshare USB HID multitouch `0712:000a`; check with
+`grep -A4 Waveshare /proc/bus/input/devices`, it shows as `event4` and
+`mouse0`) drives the same actions through a gesture recogniser. Tap = next
+scene, long press (≥ 700 ms) = re-roll, swipe right-to-left / left-to-right
+= next / previous preset, swipe up = palette, swipe down = overlay,
+two-finger tap = pause, and a tap in the top-left corner (x < 0.12, y <
+0.05) = quit. The positions are SDL's normalised window coordinates, so with
+`--rotate 90/270` the directions and the corner follow the window, not the
+picture. The headless tests (`--touches`, README "Touch control") pass on the
+Pi. The gestures have not been tried on the real panel. If the X session
+reports the panel only as a pointer, no finger events arrive and touch does
+nothing.
 
 ## Running it next to a photo frame (pl-on / pl-off)
 
