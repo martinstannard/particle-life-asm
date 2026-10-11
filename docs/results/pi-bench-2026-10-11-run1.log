@@ -1,0 +1,66 @@
+Linux raspberrypi 6.18.34+rpt-rpi-v8 #1 SMP PREEMPT Debian 1:6.18.34-1+rpt1 (2026-06-09) aarch64 GNU/Linux
+gcc (Debian 14.2.0-19) 14.2.0
+GNU assembler (GNU Binutils for Debian) 2.44
+2.32.4
+Model		: Raspberry Pi 4 Model B Rev 1.5
+Features	: fp asimd evtstrm crc32 cpuid
+4
+               total        used        free      shared  buff/cache   available
+Mem:            1847         419         392          34        1133        1427
+gcc -c -g -DNEWTON=2 -DKPIPE=1 -Isrc/arm64 -Isrc -o build-arm64/main.o src/arm64/main.S
+gcc -c -g -DNEWTON=2 -DKPIPE=1 -Isrc/arm64 -Isrc -o build-arm64/render.o src/arm64/render.S
+gcc -c -g -DNEWTON=2 -DKPIPE=1 -Isrc/arm64 -Isrc -o build-arm64/font.o src/font.S
+gcc -c -g -DNEWTON=2 -DKPIPE=1 -Isrc/arm64 -Isrc -o build-arm64/sim.o src/arm64/sim.S
+gcc -c -g -DNEWTON=2 -DKPIPE=1 -Isrc/arm64 -Isrc -o build-arm64/threads.o src/arm64/threads.S
+gcc -c -g -DNEWTON=2 -DKPIPE=1 -Isrc/arm64 -Isrc -o build-arm64/presets.o src/arm64/presets.S
+gcc -c -g -DNEWTON=2 -DKPIPE=1 -Isrc/arm64 -Isrc -o build-arm64/spawn.o src/arm64/spawn.S
+gcc -c -g -DNEWTON=2 -DKPIPE=1 -Isrc/arm64 -Isrc -o build-arm64/palettes.o src/arm64/palettes.S
+gcc -c -g -DNEWTON=2 -DKPIPE=1 -Isrc/arm64 -Isrc -o build-arm64/palettes_data.o src/palettes_data.S
+gcc  -o build-arm64/particle_life build-arm64/main.o build-arm64/render.o build-arm64/font.o build-arm64/sim.o build-arm64/threads.o build-arm64/presets.o build-arm64/spawn.o build-arm64/palettes.o build-arm64/palettes_data.o -lSDL2 -lpthread -lm
+gcc -O3 -mcpu=cortex-a72 -Wall -Wextra -g  -o build-arm64/test_step tests/test_step.c build-arm64/ref.o build-arm64/sim.o build-arm64/threads.o build-arm64/presets.o build-arm64/spawn.o build-arm64/palettes.o build-arm64/palettes_data.o -lm -lpthread
+gcc -O3 -mcpu=cortex-a72 -Wall -Wextra -g  -o build-arm64/test_threads tests/test_threads.c build-arm64/sim.o build-arm64/threads.o build-arm64/presets.o build-arm64/spawn.o build-arm64/palettes.o build-arm64/palettes_data.o -lm -lpthread
+ondemand
+1800000
+temp=62.8'C
+asm   simd=neon threads=1 particles=10000 types=6 world=1920x1080 cell-div=2 steps=200 (after 100 warmup)
+      58.2 steps/s  17.168 ms/step  1716.80 ns/particle-step
+asm   simd=neon threads=1 particles=50000 types=6 world=4293x2415 cell-div=2 steps=200 (after 100 warmup)
+      11.4 steps/s  87.943 ms/step  1758.87 ns/particle-step
+asm   simd=neon threads=1 particles=200000 types=6 world=8587x4830 cell-div=2 steps=200 (after 100 warmup)
+      2.9 steps/s  345.505 ms/step  1727.53 ns/particle-step
+asm   simd=neon threads=4 particles=10000 types=6 world=1920x1080 cell-div=2 steps=200 (after 100 warmup)
+      225.5 steps/s  4.434 ms/step  443.43 ns/particle-step
+asm   simd=neon threads=4 particles=50000 types=6 world=4293x2415 cell-div=2 steps=200 (after 100 warmup)
+      36.8 steps/s  27.210 ms/step  544.20 ns/particle-step
+asm   simd=neon threads=4 particles=200000 types=6 world=8587x4830 cell-div=2 steps=200 (after 100 warmup)
+      9.8 steps/s  102.349 ms/step  511.75 ns/particle-step
+asm   simd=neon threads=1 particles=10000 types=6 world=1080x1920 cell-div=2 steps=200 (after 100 warmup)
+      58.0 steps/s  17.228 ms/step  1722.79 ns/particle-step
+asm   simd=neon threads=1 particles=20000 types=6 world=1080x1920 cell-div=2 steps=200 (after 100 warmup)
+      15.4 steps/s  64.997 ms/step  3249.87 ns/particle-step
+asm   simd=neon threads=1 particles=40000 types=6 world=1080x1920 cell-div=2 steps=200 (after 100 warmup)
+      3.9 steps/s  253.476 ms/step  6336.91 ns/particle-step
+asm   simd=neon threads=4 particles=10000 types=6 world=1080x1920 cell-div=2 steps=200 (after 100 warmup)
+      219.7 steps/s  4.551 ms/step  455.09 ns/particle-step
+asm   simd=neon threads=4 particles=20000 types=6 world=1080x1920 cell-div=2 steps=200 (after 100 warmup)
+      47.5 steps/s  21.051 ms/step  1052.56 ns/particle-step
+asm   simd=neon threads=4 particles=40000 types=6 world=1080x1920 cell-div=2 steps=200 (after 100 warmup)
+      13.6 steps/s  73.327 ms/step  1833.17 ns/particle-step
+render 1080x1920, 20000 particles, 100 frames: 4.336 ms/frame without overlay, 4.479 ms/frame with overlay; overlay alone (text + drawing) 0.2860 ms/frame
+--- kernel variant NEWTON=1
+asm   simd=neon threads=1 particles=50000 types=6 world=4293x2415 cell-div=2 steps=200 (after 100 warmup)
+      13.4 steps/s  74.375 ms/step  1487.50 ns/particle-step
+asm   simd=neon threads=4 particles=50000 types=6 world=4293x2415 cell-div=2 steps=200 (after 100 warmup)
+      48.1 steps/s  20.799 ms/step  415.99 ns/particle-step
+--- kernel variant KPIPE=0
+asm   simd=neon threads=1 particles=50000 types=6 world=4293x2415 cell-div=2 steps=200 (after 100 warmup)
+      9.9 steps/s  100.836 ms/step  2016.72 ns/particle-step
+asm   simd=neon threads=4 particles=50000 types=6 world=4293x2415 cell-div=2 steps=200 (after 100 warmup)
+      32.8 steps/s  30.500 ms/step  609.99 ns/particle-step
+--- C reference (gcc -O3 -mcpu=cortex-a72)
+C ref threads=1 particles=10000 types=6 world=1920x1080 cell-div=2 steps=200 (after 100 warmup)
+      30.6 steps/s  32.635 ms/step  3263.50 ns/particle-step
+C ref threads=1 particles=50000 types=6 world=4293x2415 cell-div=2 steps=200 (after 100 warmup)
+      6.1 steps/s  163.681 ms/step  3273.61 ns/particle-step
+C ref threads=1 particles=200000 types=6 world=8587x4830 cell-div=2 steps=200 (after 100 warmup)
+      1.5 steps/s  646.747 ms/step  3233.73 ns/particle-step

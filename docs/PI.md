@@ -4,10 +4,10 @@ The AArch64 / NEON build (`src/arm64/`, see the ARM64 section of the README)
 for a Raspberry Pi 4 Model B (Cortex-A72, 4 cores) on Raspberry Pi OS 64-bit
 (Debian 13), with the Waveshare 5.5" HDMI AMOLED (1080x1920, portrait).
 
-Status when this was written: the AArch64 code has only been assembled and
-symbol-checked with clang on an x86 machine. It has **not been run** (no
-emulator, no Pi access yet), so the first `make test` on the Pi is the first
-time it executes. Please send the output of the steps below.
+Status: runs on a Raspberry Pi 4 Model B Rev 1.5 (Raspberry Pi OS 64-bit,
+Debian 13). The test suites pass except one scene against the reference
+tolerance, and the benchmark numbers are in the README ("Measured on the
+Pi"). The workflow below is what produced them.
 
 ## 1. Once, on the Pi
 

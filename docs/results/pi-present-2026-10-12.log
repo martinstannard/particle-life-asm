@@ -1,0 +1,27 @@
+Linux raspberrypi 6.18.34+rpt-rpi-v8 #1 SMP PREEMPT Debian 1:6.18.34-1+rpt1 (2026-06-09) aarch64 GNU/Linux
+gcc (Debian 14.2.0-19) 14.2.0
+GNU assembler (GNU Binutils for Debian) 2.44
+2.32.4
+Model		: Raspberry Pi 4 Model B Rev 1.5
+Features	: fp asimd evtstrm crc32 cpuid
+4
+               total        used        free      shared  buff/cache   available
+Mem:            1847         382         428          34        1135        1464
+mkdir -p build-arm64
+gcc -c -g -DNEWTON=2 -DKPIPE=1 -Isrc/arm64 -Isrc -o build-arm64/main.o src/arm64/main.S
+gcc -c -g -DNEWTON=2 -DKPIPE=1 -Isrc/arm64 -Isrc -o build-arm64/render.o src/arm64/render.S
+gcc -c -g -DNEWTON=2 -DKPIPE=1 -Isrc/arm64 -Isrc -o build-arm64/font.o src/font.S
+gcc -c -g -DNEWTON=2 -DKPIPE=1 -Isrc/arm64 -Isrc -o build-arm64/sim.o src/arm64/sim.S
+gcc -c -g -DNEWTON=2 -DKPIPE=1 -Isrc/arm64 -Isrc -o build-arm64/threads.o src/arm64/threads.S
+gcc -c -g -DNEWTON=2 -DKPIPE=1 -Isrc/arm64 -Isrc -o build-arm64/presets.o src/arm64/presets.S
+gcc -c -g -DNEWTON=2 -DKPIPE=1 -Isrc/arm64 -Isrc -o build-arm64/spawn.o src/arm64/spawn.S
+gcc -c -g -DNEWTON=2 -DKPIPE=1 -Isrc/arm64 -Isrc -o build-arm64/palettes.o src/arm64/palettes.S
+gcc -c -g -DNEWTON=2 -DKPIPE=1 -Isrc/arm64 -Isrc -o build-arm64/palettes_data.o src/palettes_data.S
+gcc -O3 -mcpu=cortex-a72 -Wall -Wextra -g -c -o build-arm64/ref.o ref/ref.c
+gcc  -o build-arm64/particle_life build-arm64/main.o build-arm64/render.o build-arm64/font.o build-arm64/sim.o build-arm64/threads.o build-arm64/presets.o build-arm64/spawn.o build-arm64/palettes.o build-arm64/palettes_data.o -lSDL2 -lpthread -lm
+gcc -O3 -mcpu=cortex-a72 -Wall -Wextra -g  -o build-arm64/test_threads tests/test_threads.c build-arm64/sim.o build-arm64/threads.o build-arm64/presets.o build-arm64/spawn.o build-arm64/palettes.o build-arm64/palettes_data.o -lm -lpthread
+gcc -O3 -mcpu=cortex-a72 -Wall -Wextra -g  -o build-arm64/ref_bench ref/ref_bench.c build-arm64/ref.o -lm
+gcc -O3 -mcpu=cortex-a72 -Wall -Wextra -g  -o build-arm64/test_step tests/test_step.c build-arm64/ref.o build-arm64/sim.o build-arm64/threads.o build-arm64/presets.o build-arm64/spawn.o build-arm64/palettes.o build-arm64/palettes_data.o -lm -lpthread
+present texture 1080x1920 rotate 0 fullscreen: 300 frames, render 9.249 ms + upload 12.684 ms + present 0.812 ms per frame (present includes the vsync wait unless --no-vsync)
+present texture 1080x1920 rotate 90 fullscreen: 300 frames, render 12.047 ms + upload 14.227 ms + present 0.722 ms per frame (present includes the vsync wait unless --no-vsync)
+present surface 1080x1920 rotate 0 fullscreen: 300 frames, render 11.384 ms + upload 0.003 ms + present 12.805 ms per frame (present includes the vsync wait unless --no-vsync)

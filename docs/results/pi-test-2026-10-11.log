@@ -1,0 +1,243 @@
+Linux raspberrypi 6.18.34+rpt-rpi-v8 #1 SMP PREEMPT Debian 1:6.18.34-1+rpt1 (2026-06-09) aarch64 GNU/Linux
+gcc (Debian 14.2.0-19) 14.2.0
+GNU assembler (GNU Binutils for Debian) 2.44
+2.32.4
+Model		: Raspberry Pi 4 Model B Rev 1.5
+Features	: fp asimd evtstrm crc32 cpuid
+4
+               total        used        free      shared  buff/cache   available
+Mem:            1847         426         417          34        1103        1421
+mkdir -p build-arm64
+gcc -c -g -DNEWTON=2 -DKPIPE=1 -Isrc/arm64 -Isrc -o build-arm64/main.o src/arm64/main.S
+gcc -c -g -DNEWTON=2 -DKPIPE=1 -Isrc/arm64 -Isrc -o build-arm64/render.o src/arm64/render.S
+gcc -c -g -DNEWTON=2 -DKPIPE=1 -Isrc/arm64 -Isrc -o build-arm64/font.o src/font.S
+gcc -c -g -DNEWTON=2 -DKPIPE=1 -Isrc/arm64 -Isrc -o build-arm64/sim.o src/arm64/sim.S
+gcc -c -g -DNEWTON=2 -DKPIPE=1 -Isrc/arm64 -Isrc -o build-arm64/threads.o src/arm64/threads.S
+gcc -c -g -DNEWTON=2 -DKPIPE=1 -Isrc/arm64 -Isrc -o build-arm64/presets.o src/arm64/presets.S
+gcc -c -g -DNEWTON=2 -DKPIPE=1 -Isrc/arm64 -Isrc -o build-arm64/spawn.o src/arm64/spawn.S
+gcc -c -g -DNEWTON=2 -DKPIPE=1 -Isrc/arm64 -Isrc -o build-arm64/palettes.o src/arm64/palettes.S
+gcc -c -g -DNEWTON=2 -DKPIPE=1 -Isrc/arm64 -Isrc -o build-arm64/palettes_data.o src/palettes_data.S
+gcc -O3 -mcpu=cortex-a72 -Wall -Wextra -g -c -o build-arm64/ref.o ref/ref.c
+gcc  -o build-arm64/particle_life build-arm64/main.o build-arm64/render.o build-arm64/font.o build-arm64/sim.o build-arm64/threads.o build-arm64/presets.o build-arm64/spawn.o build-arm64/palettes.o build-arm64/palettes_data.o -lSDL2 -lpthread -lm
+gcc -O3 -mcpu=cortex-a72 -Wall -Wextra -g  -o build-arm64/test_threads tests/test_threads.c build-arm64/sim.o build-arm64/threads.o build-arm64/presets.o build-arm64/spawn.o build-arm64/palettes.o build-arm64/palettes_data.o -lm -lpthread
+gcc -O3 -mcpu=cortex-a72 -Wall -Wextra -g  -o build-arm64/ref_bench ref/ref_bench.c build-arm64/ref.o -lm
+gcc -O3 -mcpu=cortex-a72 -Wall -Wextra -g  -o build-arm64/test_step tests/test_step.c build-arm64/ref.o build-arm64/sim.o build-arm64/threads.o build-arm64/presets.o build-arm64/spawn.o build-arm64/palettes.o build-arm64/palettes_data.o -lm -lpthread
+gcc -O3 -mcpu=cortex-a72 -Wall -Wextra -g  -o build-arm64/test_presets tests/test_presets.c build-arm64/ref.o build-arm64/sim.o build-arm64/threads.o build-arm64/presets.o build-arm64/spawn.o build-arm64/palettes.o build-arm64/palettes_data.o -lm -lpthread
+gcc -O3 -mcpu=cortex-a72 -Wall -Wextra -g  -o build-arm64/test_spawns tests/test_spawns.c build-arm64/ref.o build-arm64/sim.o build-arm64/threads.o build-arm64/presets.o build-arm64/spawn.o build-arm64/palettes.o build-arm64/palettes_data.o -lm -lpthread
+gcc -O3 -mcpu=cortex-a72 -Wall -Wextra -g  -o build-arm64/test_overlay tests/test_overlay.c build-arm64/render.o build-arm64/font.o build-arm64/sim.o build-arm64/threads.o build-arm64/presets.o build-arm64/spawn.o build-arm64/palettes.o build-arm64/palettes_data.o -lm -lpthread
+./build-arm64/test_step
+--- cell size = max radius / 1
+N=2000   K=6  world= 800x600  fscale=0.3 dt=0.017 neon     threads=1  R=1 grid=11x8  init bit-identical
+  60 steps: max |asm - C grid| = 3.05e-05 px, max |asm - brute| = 6.10e-05 px, max speed 0.022 px/step  OK
+N=2000   K=12 world= 800x600  fscale=0.3 dt=0.017 neon     threads=1  R=1 grid=11x8  init bit-identical
+  60 steps: max |asm - C grid| = 3.05e-05 px, max |asm - brute| = 3.05e-05 px, max speed 0.022 px/step  OK
+N=1500   K=3  world= 300x256  fscale=0.3 dt=0.017 neon     threads=1  R=1 grid=4x4  init bit-identical
+  60 steps: max |asm - C grid| = 1.53e-05 px, max |asm - brute| = 1.53e-05 px, max speed 0.054 px/step  OK
+(AVX-512 not available, skipped)
+N=2000   K=5  world= 600x400  fscale=3.0 dt=0.050 neon     threads=1  R=1 grid=8x5  init bit-identical
+  20 steps: max |asm - C grid| = 6.10e-05 px, max |asm - brute| = 6.10e-05 px, max speed 0.840 px/step  OK
+N=2000   K=11 world= 600x400  fscale=3.0 dt=0.050 neon     threads=1  R=1 grid=8x5  init bit-identical
+  20 steps: max |asm - C grid| = 3.05e-05 px, max |asm - brute| = 6.10e-05 px, max speed 0.827 px/step  OK
+N=12000  K=4  world= 256x256  fscale=0.3 dt=0.017 neon     threads=1  R=1 grid=3x3  init bit-identical
+  3 steps: max |asm - C grid| = 1.93e-04 px, max |asm - brute| = 9.16e-05 px, max speed 0.012 px/step  OK
+N=30000  K=9  world=1920x1080 fscale=0.3 dt=0.017 neon     threads=1  R=1 grid=27x15  init bit-identical
+  30 steps: max |asm - C grid| = 7.93e-04 px, max speed 0.028 px/step  OK
+N=30000  K=9  world=1920x1080 fscale=0.3 dt=0.017 neon     threads=8  R=1 grid=27x15  init bit-identical
+  30 steps: max |asm - C grid| = 7.93e-04 px, max speed 0.028 px/step  OK
+N=100    K=3  world= 300x256  fscale=0.3 dt=0.017 neon     threads=8  R=1 grid=4x3  init bit-identical
+  30 steps: max |asm - C grid| = 0.00e+00 px, max |asm - brute| = 0.00e+00 px, max speed 0.005 px/step  OK
+--- cell size = max radius / 2
+N=2000   K=6  world= 800x600  fscale=0.3 dt=0.017 neon     threads=1  R=2 grid=22x17  init bit-identical
+  60 steps: max |asm - C grid| = 6.10e-05 px, max |asm - brute| = 6.10e-05 px, max speed 0.022 px/step  OK
+N=2000   K=12 world= 800x600  fscale=0.3 dt=0.017 neon     threads=1  R=2 grid=23x17  init bit-identical
+  60 steps: max |asm - C grid| = 1.53e-05 px, max |asm - brute| = 3.05e-05 px, max speed 0.022 px/step  OK
+N=1500   K=3  world= 300x256  fscale=0.3 dt=0.017 neon     threads=1  R=2 grid=9x8  init bit-identical
+  60 steps: max |asm - C grid| = 1.53e-05 px, max |asm - brute| = 3.05e-05 px, max speed 0.054 px/step  OK
+(AVX-512 not available, skipped)
+N=2000   K=5  world= 600x400  fscale=3.0 dt=0.050 neon     threads=1  R=2 grid=17x11  init bit-identical
+  20 steps: max |asm - C grid| = 6.10e-05 px, max |asm - brute| = 3.05e-05 px, max speed 0.840 px/step  OK
+N=2000   K=11 world= 600x400  fscale=3.0 dt=0.050 neon     threads=1  R=2 grid=17x11  init bit-identical
+  20 steps: max |asm - C grid| = 6.10e-05 px, max |asm - brute| = 6.10e-05 px, max speed 0.827 px/step  OK
+N=12000  K=4  world= 256x256  fscale=0.3 dt=0.017 neon     threads=1  R=2 grid=7x7  init bit-identical
+  3 steps: max |asm - C grid| = 1.93e-04 px, max |asm - brute| = 9.16e-05 px, max speed 0.012 px/step  OK
+N=30000  K=9  world=1920x1080 fscale=0.3 dt=0.017 neon     threads=1  R=2 grid=55x31  init bit-identical
+  30 steps: max |asm - C grid| = 7.93e-04 px, max speed 0.028 px/step  OK
+N=30000  K=9  world=1920x1080 fscale=0.3 dt=0.017 neon     threads=8  R=2 grid=55x31  init bit-identical
+  30 steps: max |asm - C grid| = 7.93e-04 px, max speed 0.028 px/step  OK
+N=100    K=3  world= 300x256  fscale=0.3 dt=0.017 neon     threads=8  R=2 grid=8x7  init bit-identical
+  30 steps: max |asm - C grid| = 0.00e+00 px, max |asm - brute| = 0.00e+00 px, max speed 0.005 px/step  OK
+ALL TESTS PASSED
+./build-arm64/test_spawns tests/plbox_spawns.txt
+  radiant_fans  K=2  n=2000 pl-box gives 1334 particles, asm 2000 (documented deviation)
+  radiant_fans  K=2  n=1001 pl-box gives 668 particles, asm 1001 (documented deviation)
+bit-identical to pl-box (count + hash of all x, y, type):
+  pie           12/12 cases (K 2,3,5,8,13,16; 2000 @1600x900 and 1001 @900x1400)
+  line          12/12 cases (K 2,3,5,8,13,16; 2000 @1600x900 and 1001 @900x1400)
+  ring          12/12 cases (K 2,3,5,8,13,16; 2000 @1600x900 and 1001 @900x1400)
+  rainbow_ring  12/12 cases (K 2,3,5,8,13,16; 2000 @1600x900 and 1001 @900x1400)
+  rainbow_rings 12/12 cases (K 2,3,5,8,13,16; 2000 @1600x900 and 1001 @900x1400)
+  soft_clusters 12/12 cases (K 2,3,5,8,13,16; 2000 @1600x900 and 1001 @900x1400)
+  radiant_fans  10/10 cases (K 2,3,5,8,13,16; 2000 @1600x900 and 1001 @900x1400)
+  spiral        12/12 cases (K 2,3,5,8,13,16; 2000 @1600x900 and 1001 @900x1400)
+  twin_spirals  12/12 cases (K 2,3,5,8,13,16; 2000 @1600x900 and 1001 @900x1400)
+  spiral_arms   12/12 cases (K 2,3,5,8,13,16; 2000 @1600x900 and 1001 @900x1400)
+  blocks        12/12 cases (K 2,3,5,8,13,16; 2000 @1600x900 and 1001 @900x1400)
+  line_mixed    12/12 cases (K 2,3,5,8,13,16; 2000 @1600x900 and 1001 @900x1400)
+  stripes       12/12 cases (K 2,3,5,8,13,16; 2000 @1600x900 and 1001 @900x1400)
+  polar_maze    12/12 cases (K 2,3,5,8,13,16; 2000 @1600x900 and 1001 @900x1400)
+  heart         12/12 cases (K 2,3,5,8,13,16; 2000 @1600x900 and 1001 @900x1400)
+  star          12/12 cases (K 2,3,5,8,13,16; 2000 @1600x900 and 1001 @900x1400)
+  total 190/190 identical, 2 cases where pl-box itself returns < N
+invariants of pl_spawn, N=3001, 1280x720, K=1..16 (min/max count per type at K=8):
+  pie           ok    K=8 per-type  330..401  (all types present)
+  line          ok    K=8 per-type  346..407  (all types present)
+  ring          ok    K=8 per-type  356..388  (all types present)
+  rainbow_ring  ok    K=8 per-type  356..401  (all types present)
+  rainbow_rings ok    K=8 per-type   35..701  (all types present)
+  soft_clusters ok    K=8 per-type  375..376  (all types present)
+  radiant_fans  ok    K=8 per-type  375..376  (all types present)
+  spiral        ok    K=8 per-type    0..751  (type coverage not guaranteed by pl-box)
+  twin_spirals  ok    K=8 per-type  375..376  (all types present)
+  spiral_arms   ok    K=8 per-type  375..376  (all types present)
+  blocks        ok    K=8 per-type  214..537  (all types present)
+  line_mixed    ok    K=8 per-type  363..387  (all types present)
+  stripes       ok    K=8 per-type  375..376  (all types present)
+  polar_maze    ok    K=8 per-type   94..690  (type coverage not guaranteed by pl-box)
+  heart         ok    K=8 per-type  231..551  (type coverage not guaranteed by pl-box)
+  star          ok    K=8 per-type    0..3001 (type coverage not guaranteed by pl-box)
+  random        ok    K=8 per-type  340..408  (all types present)
+  star_fixed    ok    K=8 per-type  275..932  (type coverage not guaranteed by pl-box)
+ALL SPAWN TESTS PASSED
+./build-arm64/test_overlay
+  "FPS 60.0"                          80x12  scale 1:  101 text px,   84 shadow px, 0 differing  OK
+  "FPS 60.0\nK=9" (newline)           80x24  scale 1:  140 text px,  116 shadow px, 0 differing  OK
+  "FPS 60.0" at scale 2              140x20  scale 2:  404 text px,  336 shadow px, 0 differing  OK
+  "K=96" clipped right and bottom     30x12  scale 1:   43 text px,   30 shadow px, 0 differing  OK
+  "60" clipped at scale 2             25x13  scale 2:   74 text px,   41 shadow px, 0 differing  OK
+ALL OVERLAY TESTS PASSED
+./build-arm64/test_presets tests/plbox_ref.txt
+--- preset names
+  31 presets, lookup by display/enum name, case-insensitive  OK
+--- attraction matrices vs pl-box (RuleMatrix::from_preset run by tools/plbox_dump)
+  Snake         K=1..16: 16 matrices, 1496 values, bit-identical to pl-box
+  Chains1       K=1..16: 16 matrices, 1496 values, bit-identical to pl-box
+  Chains2       K=1..16: 16 matrices, 1496 values, bit-identical to pl-box
+  Chains3       K=1..16: 16 matrices, 1496 values, bit-identical to pl-box
+  RPS           K=1..16: 16 matrices, 1496 values, bit-identical to pl-box
+  Bipartite     K=1..16: 16 matrices, 1496 values, bit-identical to pl-box
+  Hub&Spokes    K=1..16: 16 matrices, 1496 values, bit-identical to pl-box
+  Shells        K=1..16: 16 matrices, 1496 values, bit-identical to pl-box
+  Swirl         K=1..16: 16 matrices, 1496 values, bit-identical to pl-box
+  Checker       K=1..16: 16 matrices, 1496 values, bit-identical to pl-box
+  Dimers        K=1..16: 16 matrices, 1496 values, bit-identical to pl-box
+  TriadFlocks   K=1..16: 16 matrices, 1496 values, bit-identical to pl-box
+  Conveyor      K=1..16: 16 matrices, 1496 values, bit-identical to pl-box
+  Patchwork     K=1..16: 16 matrices, 1496 values, bit-identical to pl-box
+  Wavefield     K=1..16: 16 matrices, 1496 values, bit-identical to pl-box
+  ChiralBand    K=1..16: 16 matrices, 1496 values, bit-identical to pl-box
+  RotConveyor   K=1..16: 16 matrices, 1496 values, bit-identical to pl-box
+  PrimeHop      K=1..16: 16 matrices, 1496 values, bit-identical to pl-box
+  ParityVortex  K=1..16: 16 matrices, 1496 values, bit-identical to pl-box
+  Helical       K=1..16: 16 matrices, 1496 values, bit-identical to pl-box
+  BiasedWave    K=1..16: 16 matrices, 1496 values, bit-identical to pl-box
+  ModTriads     K=1..16: 16 matrices, 1496 values, bit-identical to pl-box
+  SkipPursuit   K=1..16: 16 matrices, 1496 values, bit-identical to pl-box
+  BlueNoise     K=1..16: 16 matrices, 1496 values, bit-identical to pl-box
+  Phasefield    K=1..16: 16 matrices, 1496 values, bit-identical to pl-box
+  RingRoad      K=1..16: 16 matrices, 1496 values, bit-identical to pl-box
+  TriSpiral     K=1..16: 16 matrices, 1496 values, bit-identical to pl-box
+  VortexLattice K=1..16: 16 matrices, 1496 values, bit-identical to pl-box
+  DriftPatch    K=1..16: 16 matrices, 1496 values, bit-identical to pl-box
+  29 of 29 deterministic presets bit-identical to pl-box (Random, Symmetric are random)
+--- every preset installed for K = 1..16: ranges, physics, derived tables, grid
+  Random        force 1.10 fric 0.60 core 0.70 minr [12,22) maxr [28,45)  attraction in [-0.998, +0.996]  OK
+  Symmetric     force 0.30 fric 0.40 core 0.60 minr [12,24) maxr [33,70)  attraction in [-0.999, +1.000]  OK
+  Snake         force 0.30 fric 0.40 core 0.60 minr [12,24) maxr [33,70)  attraction in [+0.000, +1.000]  OK
+  Chains1       force 0.30 fric 0.40 core 0.60 minr [12,24) maxr [33,70)  attraction in [-1.000, +1.000]  OK
+  Chains2       force 0.30 fric 0.40 core 0.60 minr [12,24) maxr [33,70)  attraction in [-1.000, +1.000]  OK
+  Chains3       force 0.30 fric 0.40 core 0.60 minr [12,24) maxr [33,70)  attraction in [+0.000, +1.000]  OK
+  RPS           force 0.30 fric 0.40 core 0.60 minr [12,24) maxr [33,70)  attraction in [-0.700, +0.900]  OK
+  Bipartite     force 1.10 fric 0.60 core 0.70 minr [12,22) maxr [28,45)  attraction in [-0.800, +0.800]  OK
+  Hub&Spokes    force 1.10 fric 0.60 core 0.70 minr [12,22) maxr [28,45)  attraction in [+0.000, +1.000]  OK
+  Shells        force 1.10 fric 0.60 core 0.70 minr [12,22) maxr [28,45)  attraction in [-0.600, +0.900]  OK
+  Swirl         force 1.40 fric 0.35 core 0.90 minr [12,20) maxr [28,45)  attraction in [-0.700, +0.700]  OK
+  Checker       force 0.30 fric 0.40 core 0.60 minr [12,24) maxr [33,70)  attraction in [-0.800, +0.800]  OK
+  Dimers        force 1.10 fric 0.60 core 0.70 minr [12,22) maxr [28,45)  attraction in [-0.900, +1.000]  OK
+  TriadFlocks   force 1.10 fric 0.60 core 0.70 minr [12,22) maxr [28,45)  attraction in [-0.700, +0.900]  OK
+  Conveyor      force 1.10 fric 0.60 core 0.70 minr [12,22) maxr [28,45)  attraction in [-0.600, +0.700]  OK
+  Patchwork     force 0.30 fric 0.40 core 0.60 minr [12,24) maxr [33,70)  attraction in [-0.900, +0.900]  OK
+  Wavefield     force 1.40 fric 0.35 core 0.90 minr [12,20) maxr [28,45)  attraction in [-0.900, +0.900]  OK
+  ChiralBand    force 1.40 fric 0.35 core 0.90 minr [12,20) maxr [28,45)  attraction in [-0.543, +0.843]  OK
+  RotConveyor   force 0.30 fric 0.40 core 0.60 minr [12,24) maxr [33,70)  attraction in [-0.800, +0.800]  OK
+  PrimeHop      force 0.30 fric 0.40 core 0.60 minr [12,24) maxr [33,70)  attraction in [-0.348, +0.900]  OK
+  ParityVortex  force 1.10 fric 0.60 core 0.70 minr [12,22) maxr [28,45)  attraction in [-0.600, +0.800]  OK
+  Helical       force 0.30 fric 0.40 core 0.60 minr [12,24) maxr [33,70)  attraction in [-1.000, +1.000]  OK
+  BiasedWave    force 0.30 fric 0.40 core 0.60 minr [12,24) maxr [33,70)  attraction in [-0.600, +0.900]  OK
+  ModTriads     force 1.40 fric 0.35 core 0.90 minr [12,20) maxr [28,45)  attraction in [-0.750, +0.850]  OK
+  SkipPursuit   force 1.10 fric 0.60 core 0.70 minr [12,22) maxr [28,45)  attraction in [-1.000, +0.900]  OK
+  BlueNoise     force 0.30 fric 0.40 core 0.60 minr [12,24) maxr [33,70)  attraction in [-0.886, +0.898]  OK
+  Phasefield    force 1.40 fric 0.35 core 0.90 minr [12,20) maxr [28,45)  attraction in [-0.920, +0.920]  OK
+  RingRoad      force 0.30 fric 0.40 core 0.60 minr [12,24) maxr [33,70)  attraction in [-0.800, +0.850]  OK
+  TriSpiral     force 1.40 fric 0.35 core 0.90 minr [12,20) maxr [28,45)  attraction in [-0.935, +0.935]  OK
+  VortexLattice force 1.10 fric 0.40 core 0.70 minr [12,22) maxr [28,45)  attraction in [-0.600, +0.600]  OK
+  DriftPatch    force 1.10 fric 0.50 core 0.70 minr [12,22) maxr [28,45)  attraction in [-0.630, +0.870]  OK
+--- shuffle bag
+  pool curated   17 entries, 340 picks: only pool entries, never the current one, each once per round, 21 full rounds; K = the curated count  OK
+  pool generated 31 entries, 620 picks: only pool entries, never the current one, each once per round, 20 full rounds; K drawn 2..16  OK
+  pool all       48 entries, 960 picks: only pool entries, never the current one, each once per round, 20 full rounds; K curated count / drawn  OK
+  entry lookup (curated first, g:/c: prefixes, generated first in the generated pool)  OK
+--- switch, then asm vs C reference loaded with the new rules from the same state
+  Shells -> Checker  N=4000 K=6 neon threads=1: maxr 44.8 -> 69.6, grid 44x31 -> 28x20, state bit-identical to ref
+    30 steps: asm vs ref(new rules) max 6.1e-05 px, 0/4000 particles > 1e-03; vs brute(new) max 6.1e-05 px, 0 > 1e-03
+              asm vs ref(OLD rules) max 0.72 px, 4000/4000 particles > 1e-03 (stale rules detected)  OK
+  Shells -> Dimers  N=4000 K=6 neon threads=1: maxr 44.9 -> 43.9, grid 44x31 -> 45x31, state bit-identical to ref
+    30 steps: asm vs ref(new rules) max 6.1e-05 px, 0/4000 particles > 1e-03; vs brute(new) max 6.1e-05 px, 0 > 1e-03
+              asm vs ref(OLD rules) max 0.79 px, 3999/4000 particles > 1e-03 (stale rules detected)  OK
+  Snake -> TriSpiral  N=4000 K=12 neon threads=1: maxr 70.0 -> 44.7, grid 28x20 -> 44x31, state bit-identical to ref
+    30 steps: asm vs ref(new rules) max 6.1e-05 px, 0/4000 particles > 1e-03; vs brute(new) max 6.1e-05 px, 0 > 1e-03
+              asm vs ref(OLD rules) max 0.88 px, 4000/4000 particles > 1e-03 (stale rules detected)  OK
+  Helical -> SkipPursuit  N=20000 K=7 neon threads=8: maxr 69.1 -> 44.9, grid 55x31 -> 85x48, state bit-identical to ref
+    20 steps: asm vs ref(new rules) max 1.8e-03 px, 1/20000 particles > 1e-03; vs brute(new) max 1.8e-03 px, 1 > 1e-03
+              asm vs ref(OLD rules) max 0.40 px, 19997/20000 particles > 1e-03 (stale rules detected)  OK
+  SkipPursuit -> Random  N=20000 K=9 neon threads=8: maxr 44.9 -> 44.8, grid 85x48 -> 85x48, state bit-identical to ref
+    20 steps: asm vs ref(new rules) max 1.2e-04 px, 0/20000 particles > 1e-03; vs brute(new) max 2.2e-03 px, 1 > 1e-03
+              asm vs ref(OLD rules) max 0.53 px, 20000/20000 particles > 1e-03 (stale rules detected)  OK
+--- scene switches over K = 2..16 (preset, type count, spawn, palette) vs C reference
+  K=2  ChiralBand    spawn blocks        palette fresh-mint               neon     threads=1 grid 53x33: ref max 3.1e-05 px (0 > 1e-03), stale ref 5998/6000 off  OK
+  K=3  SkipPursuit   spawn pie           palette teal-aqua                neon     threads=1 grid 52x33: ref max 2.4e-04 px (0 > 1e-03), stale ref 5998/6000 off  OK
+  K=4  Random        spawn ring          palette orange-teal-peach        neon     threads=1 grid 49x31: ref max 6.1e-05 px (0 > 1e-03), stale ref 6000/6000 off  OK
+  K=5  Bipartite     spawn spiral        palette pastel-rainbow           neon     threads=1 grid 49x31: ref max 1.2e-04 px (0 > 1e-03), stale ref 6000/6000 off  OK
+  K=6  Conveyor      spawn stripes       palette neon-pop                 neon     threads=1 grid 48x31: ref max 6.1e-05 px (0 > 1e-03), stale ref 6000/6000 off  OK
+  K=7  Helical       spawn star_fixed    palette neon-spectrum            neon     threads=1 grid 31x20: ref max 6.1e-05 px (0 > 1e-03), stale ref 5998/6000 off  OK
+  K=8  TriSpiral     spawn rainbow_rings palette tropical-punch           neon     threads=1 grid 49x31: ref max 6.1e-05 px (0 > 1e-03), stale ref 6000/6000 off  OK
+  K=9  Chains2       spawn spiral_arms   palette candy-neon               neon     threads=1 grid 31x20: ref max 6.1e-05 px (0 > 1e-03), stale ref 6000/6000 off  OK
+  K=10 Checker       spawn heart         palette classic-rainbow          neon     threads=1 grid 31x20: ref max 6.1e-05 px (0 > 1e-03), stale ref 6000/6000 off  OK
+  K=11 RotConveyor   spawn line          palette candy-neon               neon     threads=1 grid 31x20: ref max 1.8e-04 px (0 > 1e-03), stale ref 6000/6000 off  OK
+  K=12 BlueNoise     spawn radiant_fans  palette aurora                   neon     threads=1 grid 31x20: ref max 6.1e-05 px (0 > 1e-03), stale ref 5998/6000 off  OK
+  K=13 Symmetric     spawn line_mixed    palette tropical-punch           neon     threads=1 grid 31x20: ref max 3.1e-05 px (0 > 1e-03), stale ref 6000/6000 off  OK
+  K=14 Hub&Spokes    spawn random        palette rgb-plus                 neon     threads=1 grid 48x31: ref max 3.8e-06 px (0 > 1e-03), stale ref 5999/6000 off  OK
+  K=15 Patchwork     spawn rainbow_ring  palette aurora                   neon     threads=1 grid 31x20: ref max 1.5e-05 px (0 > 1e-03), stale ref 6000/6000 off  OK
+  K=16 BiasedWave    spawn twin_spirals  palette jewel-neon               neon     threads=1 grid 31x20: ref max 1.7e-03 px (9 > 1e-03), stale ref 5998/6000 off  FAIL
+     failure bits 0x20 (1 rules, 2 kernel, 4 types, 8 palette, 16 grid, 32 ref, 64 stale)
+  K=2  ChiralBand    spawn blocks        palette neon-multi               neon     threads=8 grid 49x31: ref max 6.1e-05 px (0 > 1e-03), stale ref 5996/6000 off  OK
+  K=3  SkipPursuit   spawn pie           palette fire-2                   neon     threads=8 grid 51x32: ref max 3.1e-05 px (0 > 1e-03), stale ref 5999/6000 off  OK
+  K=4  Random        spawn ring          palette neon-multi               neon     threads=8 grid 49x31: ref max 7.3e-04 px (0 > 1e-03), stale ref 6000/6000 off  OK
+  K=5  Bipartite     spawn spiral        palette warm-rainbow             neon     threads=8 grid 49x31: ref max 1.2e-03 px (2 > 1e-03), stale ref 6000/6000 off  OK
+  K=6  Conveyor      spawn stripes       palette sunset-fade              neon     threads=8 grid 49x31: ref max 3.1e-05 px (0 > 1e-03), stale ref 6000/6000 off  OK
+  K=7  Helical       spawn star_fixed    palette neon-multi               neon     threads=8 grid 31x20: ref max 6.1e-05 px (0 > 1e-03), stale ref 6000/6000 off  OK
+  K=8  TriSpiral     spawn rainbow_rings palette classic-rainbow          neon     threads=8 grid 48x31: ref max 6.1e-05 px (0 > 1e-03), stale ref 6000/6000 off  OK
+  K=9  Chains2       spawn spiral_arms   palette neon-pop                 neon     threads=8 grid 31x20: ref max 1.1e-03 px (6 > 1e-03), stale ref 5999/6000 off  OK
+  K=10 Checker       spawn heart         palette classic-rainbow          neon     threads=8 grid 31x20: ref max 6.1e-05 px (0 > 1e-03), stale ref 6000/6000 off  OK
+  K=11 RotConveyor   spawn line          palette rainbow-bold             neon     threads=8 grid 31x20: ref max 3.1e-05 px (0 > 1e-03), stale ref 5999/6000 off  OK
+  K=12 BlueNoise     spawn radiant_fans  palette rainbow-bold-2           neon     threads=8 grid 31x20: ref max 1.5e-05 px (0 > 1e-03), stale ref 5998/6000 off  OK
+  K=13 Symmetric     spawn line_mixed    palette neon-spectrum            neon     threads=8 grid 31x20: ref max 7.0e-04 px (0 > 1e-03), stale ref 6000/6000 off  OK
+  K=14 Hub&Spokes    spawn random        palette aurora                   neon     threads=8 grid 48x31: ref max 6.1e-05 px (0 > 1e-03), stale ref 5999/6000 off  OK
+  K=15 Patchwork     spawn rainbow_ring  palette tropical-punch           neon     threads=8 grid 31x20: ref max 6.1e-05 px (0 > 1e-03), stale ref 6000/6000 off  OK
+  K=16 BiasedWave    spawn twin_spirals  palette rgb-plus                 neon     threads=8 grid 31x20: ref max 3.2e-03 px (12 > 1e-03), stale ref 5997/6000 off  FAIL
+     failure bits 0x20 (1 rules, 2 kernel, 4 types, 8 palette, 16 grid, 32 ref, 64 stale)
+--- A -> B -> A with the same seed
+  Shells -> Checker -> Shells  N=5000 K=6 threads=1 (grid 40x31 -> 25x20 -> 40x31): 40 steps of A bit-identical  OK
+  TriSpiral -> PrimeHop -> TriSpiral  N=5000 K=10 threads=1 (grid 40x31 -> 25x20 -> 40x31): 40 steps of A bit-identical  OK
+  Random -> BlueNoise -> Random  N=20000 K=8 threads=8 (grid 40x31 -> 25x20 -> 40x31): 40 steps of A bit-identical  OK
+FAILED
+make: *** [Makefile:114: test] Error 1

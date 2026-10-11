@@ -1,4 +1,4 @@
-# Particle Life in x86-64 assembly
+# Particle Life in assembly (x86-64 and AArch64)
 
 A Particle Life simulation whose whole program is hand-written x86-64
 assembly (GNU `as`, `.intel_syntax noprefix`, ~8 600 lines): simulation
@@ -6,8 +6,29 @@ core, spawn layouts, rule presets, palettes, software renderer with a text
 overlay, SDL2 window loop, argument parsing and benchmark. C appears only in
 the reference implementation, the test harnesses and one contact-sheet
 helper. A port of all of it to AArch64 / NEON for the Raspberry Pi 4 lives
-in `src/arm64/` (see [ARM64](#arm64-raspberry-pi-4); assembled and
-reviewed, not yet run).
+in `src/arm64/` (see [ARM64](#arm64-raspberry-pi-4)); it builds, runs and
+passes nearly all tests on a real Pi 4B (one scene exceeds the reference
+tolerance, see [What was verified](#what-was-verified-on-arm64)).
+
+## At a glance
+
+| | x86-64 (Ryzen 7 255) | AArch64 (Raspberry Pi 4B) |
+|---|---|---|
+| code | `src/*.S`, AVX2 / AVX-512 | `src/arm64/*.S`, NEON |
+| 1 thread, ns per particle-step | 62 | 1 720 |
+| all cores, ns per particle-step | 9 to 10 (8 threads) | 450 to 550 (4 threads) |
+| vs the C reference, 1 thread | 4 to 11× faster | 1.9× faster |
+
+Both builds share the C reference (`ref/`), the test suites (`tests/`) and
+the font and palette data. `make test` runs the same suites against either.
+
+Contents: [Build and run](#build-and-run) · [Scenes](#scenes) ·
+[Algorithm](#algorithm) · [Correctness](#correctness) ·
+[Performance](#performance) · [ARM64](#arm64-raspberry-pi-4) ·
+[Raspberry Pi guide](docs/PI.md) · [Limitations](#not-done--limitations)
+
+Both architectures are in one repository: `main` carries everything
+(x86-64, AArch64 and the shared parts).
 
 Every 2 minutes the window shows a new **scene**:
 
@@ -844,9 +865,11 @@ reference (`ref/`) and every test (`tests/`) are shared: the same suites run
 against either build. The font and palette tables (`src/font.S`,
 `src/palettes_data.S`) are shared as they are pure data.
 
-**Status: assembled and symbol-checked only. The AArch64 code has not been
-executed yet** (see [What was verified](#what-was-verified-on-arm64)). Run
-`make test` on the Pi first ([docs/PI.md](docs/PI.md)).
+**Status: runs on a Raspberry Pi 4 Model B (Raspberry Pi OS 64-bit, Debian 13).
+It builds, passes the test suites except one scene against the reference
+tolerance, and was benchmarked** (see
+[What was verified](#what-was-verified-on-arm64) and the measured numbers
+below). Setup and the one-command workflow are in [docs/PI.md](docs/PI.md).
 
 ### Build
 
@@ -951,7 +974,75 @@ from typical Pi 4 copy bandwidth of 2–4 GB/s): clearing and drawing the
 at 30 fps. That is why rendering and present are timed separately from the
 step.
 
-### Kernel speed: estimate, not a measurement
+### Measured on the Pi
+
+Raspberry Pi 4 Model B Rev 1.5, Cortex-A72, 4 cores, `ondemand` governor,
+1.8 GHz, 60 to 63 °C at the start, with the Pi's photo-frame software still
+running (so these numbers are slightly pessimistic). `make bench`, 6 types,
+seed 1, 100 warm-up steps then 200 timed steps. Two full runs agreed within
+about 2%; logs are in [docs/results/](docs/results/).
+
+| particles (world) | asm, 1 thread | asm, 4 threads | C reference, 1 thread |
+|---|---:|---:|---:|
+| 10 000 (1920×1080) | 17.2 ms (58 steps/s) | 4.4 ms (225 steps/s) | 32.6 ms |
+| 50 000 (4293×2415) | 88 ms (11.4 steps/s) | 27 ms (37 steps/s) | 164 ms |
+| 200 000 (8587×4830) | 346 ms (2.9 steps/s) | 102 ms (9.8 steps/s) | 647 ms |
+
+That is about 1 720 ns per particle-step on one thread (1.9× the C
+reference built with `gcc -O3 -mcpu=cortex-a72`) and 450 to 550 ns on four
+(3.9× scaling).
+
+On the portrait panel (1080×1920, a fixed area, so density rises with N):
+
+| particles | 1 thread | 4 threads |
+|---:|---:|---:|
+| 10 000 | 17.3 ms | 4.5 ms |
+| 20 000 | 65 ms | 20 to 21 ms |
+| 40 000 | 253 ms | 73 ms |
+
+The software renderer takes 4.2 to 4.3 ms per frame at 1080×1920 with
+20 000 particles when benchmarked on its own; the overlay adds 0.3 ms.
+Getting a frame onto the real display costs more (next section), so the
+whole frame is longer than step + render.
+
+Display path on the Pi, fullscreen at 1080×1920 under the Pi's X session
+(`tools/pi.sh <host> present`, 300 frames, 20 000 particles, no vsync;
+log in [docs/results/](docs/results/)):
+
+| mode | render | upload | present | total per frame |
+|---|---:|---:|---:|---:|
+| texture (default) | 9.2 ms | 12.7 ms | 0.8 ms | 22.7 ms |
+| texture, `--rotate 90` | 12.0 ms | 14.2 ms | 0.7 ms | 26.9 ms |
+| surface | 11.4 ms | 0 | 12.8 ms | 24.2 ms |
+
+Rendering is slower here than in the stand-alone bench (9 to 12 ms against
+4.3 ms) because the Pi's photo-frame software was running at the same time
+and the framebuffer is the display's. With the display path alone taking
+23 to 27 ms, the frame rate on the panel is limited by presenting, not by
+the simulation. Adding the step: 10 000 particles (4.5 ms) is about 27 ms
+per frame, **roughly 35 fps**; 20 000 particles (20 to 21 ms) is about 43
+to 47 ms per frame, **roughly 22 fps**. A smooth panel needs fewer
+particles or a cheaper present, for example a smaller render target scaled
+up by the GPU; that was not tried.
+
+Kernel variants at 50 000 particles (ns per particle-step, 1 thread / 4
+threads):
+
+| variant | 1 thread | 4 threads |
+|---|---:|---:|
+| `NEWTON=2 KPIPE=1` (default) | 1 730 to 1 760 | 540 to 550 |
+| `NEWTON=1` (one Newton step for 1/d) | 1 490 | 415 to 470 |
+| `KPIPE=0` (plain loop) | 2 015 | 595 to 610 |
+
+`NEWTON=1` is 15 to 20% faster but its less precise 1/d fails the accuracy
+tests (positions drift 1.0 to 6.3e-3 px from the reference against a 1e-3
+limit, in the basic step test and in several scene checks), so `NEWTON=2`
+stays the default. The static estimate that follows was written before the
+Pi was available. The measured numbers above supersede its particle-count
+predictions, which were too optimistic (about 1.2 µs per particle-step on
+one core was predicted, 1.7 µs measured).
+
+### Kernel speed: estimate (before the Pi was available)
 
 Without the hardware, the inner loop was analysed with `llvm-mca`
 (`-mcpu=cortex-a72`; LLVM uses its Cortex-A57 model, whose FP latencies are
@@ -990,8 +1081,7 @@ grows with N². It is ~3.5 ms per step at 10 000 particles, ~8 ms at
 - curated presets (max radius 28–45 instead of 33–70) need ~40% less work
   per particle, so ~20% more particles.
 
-`make bench` on the Pi gives the real ns per particle-step to put into this
-estimate.
+The measured values are in [Measured on the Pi](#measured-on-the-pi).
 
 ### What was verified on ARM64
 
@@ -1003,13 +1093,16 @@ estimate.
 | exported symbols match what the shared tests and C reference use | `nm` of x86 vs AArch64 objects | only the kernel names differ, handled in `ref/pl_state.h` |
 | logic | line-by-line review of each file against its x86 original (three independent passes) | fixed: `S_K` defined twice in spawn.S (8 of 18 layouts would have read the type count from the wrong offset), three window-code issues, the kernel's dependence on flush-to-zero being off, a cross-object conditional branch |
 | x86 build unchanged | `make test` on x86 after every change | all suites pass, including the new thread test with 8 threads |
-| **tests under qemu** | `make test ARCH=aarch64` | **not run**: `aarch64-linux-gnu-gcc` and `qemu-aarch64` are not installed on this machine |
-| **tests, bench, window on the Pi** | docs/PI.md | **not run**: no access to the Pi yet |
+| **tests on the Pi** | `tools/pi.sh <host> test` (Pi 4B, 1 and 8 threads) | all suites pass except one case: the 16-type "BiasedWave" scene drifts 1.7e-3 px (1 thread) and 3.2e-3 px (8 threads) from the C reference against the 1e-3 px limit. Probably ARM's fused multiply-add rounding amplified by a chaotic scene; not yet confirmed. Log: `docs/results/pi-test-2026-10-11.log` |
+| **bench on the Pi** | `tools/pi.sh <host> bench`, twice | see [Measured on the Pi](#measured-on-the-pi); runs agree within 2% |
+| **`NEWTON=1` on the Pi** | `make test` with the variant as default | fails the accuracy tests (1.0 to 6.3e-3 px), so `NEWTON=2` stays the default |
+| tests under qemu | `make test ARCH=aarch64` | not run (no cross toolchain on the development machine) |
 
-So the AArch64 logic is **untested**. It has never executed. The first
-`make test` on the Pi (or under qemu) is its first run, and bugs that review
-missed will show up there. The tests are designed to localise them: the
-first failing suite and case name the function.
+Before the Pi run the AArch64 logic had been checked only by review and
+assembly; the Pi run is its first execution, and it found no logic error:
+the failures are tolerance exceedances against the reference (above), not
+wrong results. The tests are designed to localise bugs: the first failing
+suite and case name the function.
 
 ## What was tested and what not
 
