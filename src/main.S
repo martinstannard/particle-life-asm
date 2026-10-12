@@ -17,9 +17,11 @@
 .set SDL_TEXTUREACCESS_STREAMING, 1
 .set SDL_QUIT,              0x100
 .set SDL_KEYDOWN,           0x300
+.set SDL_MOUSEMOTION,       0x400
+.set SDL_MOUSEWHEEL,        0x403
 .set SDL_FINGERDOWN,        0x700
-.set SDL_FINGERMOTION,      0x701
-.set SDL_FINGERUP,          0x702
+.set SDL_FINGERUP,          0x701
+.set SDL_FINGERMOTION,      0x702        # the last finger event
 .set KMOD_SHIFT,            0x0003
 .set SDLK_KP_MINUS,         0x40000056
 .set SDLK_KP_PLUS,          0x40000057
@@ -75,6 +77,7 @@ s_list:      .asciz "--list-presets"
 s_headless:  .asciz "--headless"
 s_fake:      .asciz "--fake-clock"
 s_log:       .asciz "--log-switches"
+s_evlog:     .asciz "--log-events"
 s_pool:      .asciz "--pool"
 s_spawn:     .asciz "--spawn"
 s_lspawns:   .asciz "--list-spawns"
@@ -98,6 +101,11 @@ s_ev_log:    .asciz "%9.3f s  %-7s -> spawn %-13s palette %-22s K=%u\n"
 s_mut_log:   .asciz "%9.3f s  mutate %u rule value(s)\n"
 s_cycle_log: .asciz "%9.3f s  auto-cycle %s\n"
 s_ovl_log:   .asciz "%9.3f s  overlay %s\n"
+s_ev_video:  .asciz "events: video driver %s, %d touch device(s)\n"
+s_ev_dev:    .asciz "events: touch device %d: id %lld, type %d, name '%s'\n"
+s_ev_finger: .asciz "%9.3f s  event 0x%x finger touch %lld finger %lld x %.4f y %.4f pressure %.3f\n"
+s_ev_mouse:  .asciz "%9.3f s  event 0x%x mouse which %d button/state %u x %d y %d\n"
+s_ev_other:  .asciz "%9.3f s  event 0x%x\n"
 s_touch_log: .asciz "%9.3f s  touch: %s -> %s\n"
 s_badtouch:  .asciz "bad --touches event at '%s' (want d|m|u X,Y@MS[#ID])\n"
 # gestures: name, action (the log) and the key on_key runs (0 = none)
@@ -185,6 +193,7 @@ s_usage:     .ascii "usage: particle_life [--particles N] [--types K(1-16), pins
              .ascii "         [--headless FRAMES [--fake-clock SECONDS_PER_FRAME]] no window, runs the\n"
              .ascii "                       frame loop (steps, auto-cycle) and logs switches\n"
              .ascii "         [--log-switches]\n"
+             .ascii "         [--log-events] log every SDL input event and the touch devices (window)\n"
              .ascii "         [--keys STR]  feed key presses (e.g. \"r9+\") to the key handler first;\n"
              .ascii "                       '>' '<' = Right Left, 'S' = Shift+S\n"
              .ascii "         [--touches STR] feed finger events to the gesture recogniser first,\n"
@@ -247,6 +256,7 @@ opts:
         .quad s_headless,  opt_headless, 0
         .quad s_fake,      opt_fake,    4
         .quad s_log,       opt_log,     3
+        .quad s_evlog,     opt_evlog,   3
         .quad s_pool,      opt_pool,    2
         .quad s_spawn,     opt_spawn,   2
         .quad s_lspawns,   opt_lspawns, 3
@@ -287,6 +297,7 @@ opt_nocycle: .long 0
 opt_list:    .long 0
 opt_headless: .long 0
 opt_log:     .long 0
+opt_evlog:   .long 0
 opt_lspawns: .long 0
 opt_lpal:    .long 0
 opt_overlay: .long 0
@@ -1619,6 +1630,97 @@ on_touch:
         pop     rbx
         ret
 
+# --log-events, once the window is up: line-buffer stdout (it is often a
+# file), log recognised gestures too, and print the video driver and the
+# touch devices SDL knows
+log_video:
+        push    rbx
+        push    r12
+        sub     rsp, 8
+        mov     dword ptr [rip + opt_log], 1
+        xor     edi, edi
+        call    fflush@PLT
+        mov     rdi, [rip + stdout]
+        xor     esi, esi
+        mov     edx, 1                  # _IOLBF
+        xor     ecx, ecx
+        call    setvbuf@PLT
+        call    SDL_GetCurrentVideoDriver@PLT
+        mov     rbx, rax
+        call    SDL_GetNumTouchDevices@PLT
+        lea     rdi, [rip + s_ev_video]
+        mov     rsi, rbx
+        mov     edx, eax
+        xor     eax, eax
+        call    printf@PLT
+        xor     ebx, ebx
+1:      call    SDL_GetNumTouchDevices@PLT
+        cmp     ebx, eax
+        jge     9f
+        mov     edi, ebx
+        call    SDL_GetTouchDevice@PLT
+        mov     r12, rax
+        mov     rdi, rax
+        call    SDL_GetTouchDeviceType@PLT
+        mov     [rsp], eax
+        mov     edi, ebx
+        call    SDL_GetTouchName@PLT
+        lea     rdi, [rip + s_ev_dev]
+        mov     esi, ebx
+        mov     rdx, r12
+        mov     ecx, [rsp]
+        mov     r8, rax
+        xor     eax, eax
+        call    printf@PLT
+        inc     ebx
+        jmp     1b
+9:      add     rsp, 8
+        pop     r12
+        pop     rbx
+        ret
+
+# --log-events: print one SDL event (rdi): finger events with the touch
+# device, finger and position; mouse events with the device ('which', -1 =
+# made up from touch) and the pixel position, motion only with a button
+# held; anything else just its type
+log_sdl_event:
+        push    rbx
+        mov     rbx, rdi
+        call    clock_now
+        mov     esi, [rbx]
+        lea     eax, [esi - SDL_FINGERDOWN]
+        cmp     eax, SDL_FINGERMOTION - SDL_FINGERDOWN
+        ja      1f
+        mov     rdx, [rbx + 8]          # touchId
+        mov     rcx, [rbx + 16]         # fingerId
+        vcvtss2sd xmm1, xmm1, [rbx + 24]
+        vcvtss2sd xmm2, xmm2, [rbx + 28]
+        vcvtss2sd xmm3, xmm3, [rbx + 40]
+        lea     rdi, [rip + s_ev_finger]
+        mov     eax, 4
+        jmp     8f
+1:      lea     eax, [esi - SDL_MOUSEMOTION]
+        cmp     eax, SDL_MOUSEWHEEL - SDL_MOUSEMOTION
+        ja      2f
+        mov     ecx, [rbx + 16]         # motion: button state
+        test    eax, eax
+        jnz     11f
+        test    ecx, ecx
+        jz      9f
+        jmp     12f
+11:     movzx   ecx, byte ptr [rbx + 16] # button / wheel x
+12:     mov     edx, [rbx + 12]         # which
+        mov     r8d, [rbx + 20]
+        mov     r9d, [rbx + 24]
+        lea     rdi, [rip + s_ev_mouse]
+        mov     eax, 1
+        jmp     8f
+2:      lea     rdi, [rip + s_ev_other]
+        mov     eax, 1
+8:      call    printf@PLT
+9:      pop     rbx
+        ret
+
 # on_touch helper: the first finger's position is the gesture's last one
 t_track:
         mov     rax, [rbx + 16]
@@ -1743,7 +1845,10 @@ window:
         test    rax, rax
         jz      sdl_fail
         mov     [rip + win], rax
-        mov     rdi, rax
+        cmp     dword ptr [rip + opt_evlog], 0
+        je      0f
+        call    log_video
+0:      mov     rdi, [rip + win]
         mov     esi, -1
         mov     edx, SDL_RENDERER_ACCEL | SDL_RENDERER_VSYNC
         cmp     dword ptr [rip + opt_novsync], 0
@@ -1788,11 +1893,15 @@ window:
         call    SDL_PollEvent@PLT
         test    eax, eax
         jz      .Lsim
-        mov     eax, [rip + event]
+        cmp     dword ptr [rip + opt_evlog], 0
+        je      0f
+        lea     rdi, [rip + event]
+        call    log_sdl_event
+0:      mov     eax, [rip + event]
         cmp     eax, SDL_QUIT
         je      .Lquit
         lea     ecx, [eax - SDL_FINGERDOWN]
-        cmp     ecx, SDL_FINGERUP - SDL_FINGERDOWN
+        cmp     ecx, SDL_FINGERMOTION - SDL_FINGERDOWN
         ja      1f
         lea     rdi, [rip + event]          # finger down / motion / up
         call    on_touch
