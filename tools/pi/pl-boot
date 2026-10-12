@@ -1,0 +1,13 @@
+#!/bin/sh
+# Start Particle Life at boot, once the photo frame is up (mantel.service starts
+# Xorg :0 and mantel/frame.py; pl-on needs both). Run from pi's crontab:
+#   @reboot $HOME/bin/pl-boot
+# Gives up after 5 minutes without a frame, leaving the Pi as it was.
+for i in $(seq 60); do
+    if [ -S /tmp/.X11-unix/X0 ] && pgrep -f 'mantel/frame.py' >/dev/null; then
+        sleep 10                     # let the frame open its window first
+        exec "$HOME/bin/pl-on"
+    fi
+    sleep 5
+done
+echo "pl-boot: no photo frame after 5 minutes, not starting" >"$HOME/.pl-on.log"

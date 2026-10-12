@@ -185,6 +185,17 @@ ssh <pi> '~/bin/pl-on'      # PL_PARTICLES=10000 by default, PL_ARGS="..." for m
 ssh <pi> '~/bin/pl-off'
 ```
 
+To start it at every boot, `tools/pi/pl-boot` waits until mantel has X and
+the frame up (at most 5 minutes), then runs `pl-on`; it goes in pi's crontab
+(no sudo, nothing else changes; remove the line to undo):
+
+```sh
+scp tools/pi/pl-boot <pi>:bin/
+ssh <pi> '(crontab -l 2>/dev/null; echo "@reboot \$HOME/bin/pl-boot") | crontab -'
+```
+
+Tapping the top-left corner quits, and the frame comes back.
+
 A new scene appears every 2 minutes (the default). With the frame paused the
 renderer takes 4.4 ms per frame instead of 9 to 12 ms, because the two no
 longer compete for the CPU.
