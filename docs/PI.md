@@ -167,9 +167,10 @@ two-finger tap = pause, and a tap in the top-left corner (x < 0.12, y <
 0.05) = quit. The positions are SDL's normalised window coordinates, so with
 `--rotate 90/270` the directions and the corner follow the window, not the
 picture. The headless tests (`--touches`, README "Touch control") pass on the
-Pi. The gestures have not been tried on the real panel. If the X session
-reports the panel only as a pointer, no finger events arrive and touch does
-nothing.
+Pi, and on the panel every gesture but swipe right has been tried and
+recognised (X11, the panel arrives as an XInput2 direct touch device). To see
+what SDL delivers, run with `--log-events` (`PL_ARGS=--log-events ~/bin/pl-on`,
+then `~/.pl-on.log`).
 
 ## Running it next to a photo frame (pl-on / pl-off)
 

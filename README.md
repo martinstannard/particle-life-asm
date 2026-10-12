@@ -204,15 +204,25 @@ swipe 0.149 / 0.151, the corner edges), two fingers lifting in either
 order, two fingers held or moved, an up without a down, the quit, and
 malformed scripts. It passes on x86-64 and on the Pi.
 
-**Untested on the real panel.** No finger has touched the panel with this
-build. Two things are not yet known:
+**On the real panel** (Pi 4, Waveshare 1080x1920 USB touch, X11, no
+rotation): tap, long press, swipe left, up and down, two-finger tap and the
+exit corner were all tried and recognised; swipe right has not been seen yet
+but goes through the same code as swipe left. SDL gets the panel as an
+XInput2 direct touch device and the axes match the picture. The first try
+found nothing working: the constants for `SDL_FINGERUP` (0x701) and
+`SDL_FINGERMOTION` (0x702) were swapped, and since `--touches` built its
+events with the same constants the headless tests could not catch it. The
+axes are the window's, so with `--rotate 90` / `270` or a rotated X screen
+the swipe directions and the exit corner follow the window, not the picture.
 
-- Whether SDL on the Pi's X session gets the panel as a multitouch device
-  (XInput2 touch events) or only as a pointer. In the second case only the
-  synthesised mouse events arrive and the gestures do nothing.
-- Which way the axes point. They are the window's, so with `--rotate 90` /
-  `270` (window and picture at right angles) or a rotated X screen, the
-  swipe directions and the exit corner follow the window, not the picture.
+`--log-events` (window only) prints every SDL input event (finger events
+with device, finger id and position, mouse events with their device and
+pixel position), the video driver and the touch devices SDL found, plus the
+recognised gestures, line-buffered so it can go to a file:
+
+```sh
+PL_ARGS=--log-events ~/bin/pl-on        # on the Pi; then read ~/.pl-on.log
+```
 The window title carries the same information as the overlay, e.g.
 
 ```
@@ -1203,8 +1213,8 @@ suite and case name the function.
   at start-up, fps and step time. I did not look at the window contents.
   The visual check is the `--dump-frame` output (with `--overlay` for the
   overlay), which goes through the same `pl_render` and `pl_draw_text`.
-- Touch gestures were tested only through `--touches` (headless, the
-  same recogniser). They have not been tried on the real panel.
+- Touch gestures were tried on the real panel (all but swipe right, see
+  "Touch control") and headless through `--touches`.
 - Key presses were not sent to the real window, to avoid injecting input
   into the desktop. Every key except Space and Esc goes through the same
   handler that `--keys` drives headlessly, and the cycle test exercises
